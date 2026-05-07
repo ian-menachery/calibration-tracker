@@ -71,7 +71,12 @@ def fetch_window(
 
 
 def fetch_market_history(client: CLOBClient, market: Market) -> list[PriceTick] | None:
-    """Path C fetch: hourly 14d + minute 24h. Returns None on HTTP error or empty."""
+    """Path C fetch: hourly 14d + minute 24h. Returns None on any HTTP/network
+    error or empty response. httpx.HTTPError covers HTTPStatusError (4xx/5xx)
+    plus connection-level failures like RemoteProtocolError, ConnectError, and
+    ReadTimeout — any of which can hit during a multi-thousand-market backfill.
+    Skipped markets get picked up on the next --resume run.
+    """
     if market.yes_token_id is None:
         return None
     end = market.end_date
@@ -84,7 +89,7 @@ def fetch_market_history(client: CLOBClient, market: Market) -> list[PriceTick] 
             client, market.market_id, market.yes_token_id,
             end - timedelta(hours=24), end, fidelity=1,
         )
-    except httpx.HTTPStatusError:
+    except httpx.HTTPError:
         return None
     ticks = hourly + minute
     return ticks if ticks else None
