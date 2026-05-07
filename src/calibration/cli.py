@@ -7,15 +7,19 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from calibration.analysis.snapshots import extract_snapshots
 from calibration.polymarket.client import GammaClient
 from calibration.polymarket.discovery import discover_markets
 from calibration.polymarket.prices import CLOBClient, fetch_market_history
 from calibration.storage.repository import (
     get_market,
+    get_ticks_for_market,
     init_db,
     insert_price_ticks,
     markets_missing_history,
+    markets_with_history,
     upsert_markets,
+    upsert_snapshots,
 )
 
 
@@ -35,6 +39,28 @@ def cmd_discover(args: argparse.Namespace) -> int:
     finally:
         conn.close()
     print(f"Wrote {stats.kept} markets to {db_path}")
+    return 0
+
+
+def cmd_extract_snapshots(args: argparse.Namespace) -> int:
+    db_path = Path(args.db)
+    conn = init_db(db_path)
+    try:
+        market_ids = markets_with_history(conn)
+        print(f"Extracting snapshots for {len(market_ids)} markets ...")
+        total = 0
+        for mid in market_ids:
+            market = get_market(conn, mid)
+            if market is None:
+                continue
+            ticks = get_ticks_for_market(conn, mid)
+            snaps = extract_snapshots(market, ticks)
+            if snaps:
+                upsert_snapshots(conn, snaps)
+                total += len(snaps)
+        print(f"Wrote {total} snapshots to {db_path}.")
+    finally:
+        conn.close()
     return 0
 
 
@@ -88,6 +114,10 @@ def main(argv: list[str] | None = None) -> int:
     p_fetch.add_argument("--limit", type=int, default=None, help="cap markets per run")
     p_fetch.add_argument("--all", action="store_true", help="re-fetch even markets that already have ticks")
     p_fetch.set_defaults(func=cmd_fetch_prices)
+
+    p_snap = sub.add_parser("extract-snapshots", help="Stage 3: extract calibration snapshots into price_snapshots")
+    p_snap.add_argument("--db", default="data/markets.db")
+    p_snap.set_defaults(func=cmd_extract_snapshots)
 
     args = parser.parse_args(argv)
     return args.func(args)

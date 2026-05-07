@@ -158,3 +158,9 @@ def markets_missing_history(conn: sqlite3.Connection) -> list[str]:
         """
     ).fetchall()
     return [r[0] for r in rows]
+
+
+def markets_with_history(conn: sqlite3.Connection) -> list[str]:
+    """Market IDs that have at least one row in raw_price_history. Drives Stage 3."""
+    rows = conn.execute("SELECT DISTINCT market_id FROM raw_price_history").fetchall()
+    return [r[0] for r in rows]
