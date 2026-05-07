@@ -1,13 +1,19 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from calibration.storage.repository import (
     Market,
+    PriceTick,
+    Snapshot,
     count_markets,
     get_market,
+    get_ticks_for_market,
     init_db,
+    insert_price_ticks,
+    markets_missing_history,
     upsert_markets,
+    upsert_snapshots,
 )
 
 
@@ -70,3 +76,88 @@ def test_upsert_overwrites_existing_row(conn):
 
 def test_get_missing_market_returns_none(conn):
     assert get_market(conn, "does-not-exist") is None
+
+
+# ---------- raw_price_history ----------
+
+def _tick(market_id: str, minute_offset: int, price: float) -> PriceTick:
+    base = datetime(2024, 11, 1, 0, 0, 0, tzinfo=timezone.utc)
+    return PriceTick(
+        market_id=market_id,
+        timestamp=base + timedelta(minutes=minute_offset),
+        price=price,
+    )
+
+
+def test_insert_price_ticks_roundtrip(conn):
+    upsert_markets(conn, [_market("0xa")])
+    ticks = [_tick("0xa", 0, 0.5), _tick("0xa", 60, 0.6), _tick("0xa", 120, 0.7)]
+    insert_price_ticks(conn, ticks)
+    got = get_ticks_for_market(conn, "0xa")
+    assert got == ticks
+
+
+def test_get_ticks_for_market_returns_sorted(conn):
+    upsert_markets(conn, [_market("0xa")])
+    insert_price_ticks(conn, [_tick("0xa", 120, 0.7), _tick("0xa", 0, 0.5), _tick("0xa", 60, 0.6)])
+    got = get_ticks_for_market(conn, "0xa")
+    assert [t.price for t in got] == [0.5, 0.6, 0.7]
+
+
+def test_insert_price_ticks_is_idempotent(conn):
+    upsert_markets(conn, [_market("0xa")])
+    t = _tick("0xa", 0, 0.5)
+    insert_price_ticks(conn, [t])
+    insert_price_ticks(conn, [t])
+    assert len(get_ticks_for_market(conn, "0xa")) == 1
+
+
+def test_get_ticks_for_missing_market_returns_empty(conn):
+    assert get_ticks_for_market(conn, "0xnope") == []
+
+
+# ---------- price_snapshots ----------
+
+def _snapshot(market_id: str, snapshot_type: str, price: float) -> Snapshot:
+    return Snapshot(
+        market_id=market_id,
+        snapshot_type=snapshot_type,
+        price=price,
+        observed_at=datetime(2024, 11, 6, 14, 17, 41, tzinfo=timezone.utc),
+    )
+
+
+def test_upsert_snapshots_roundtrip(conn):
+    upsert_markets(conn, [_market("0xa")])
+    snaps = [_snapshot("0xa", "1h", 0.99), _snapshot("0xa", "24h", 0.63)]
+    upsert_snapshots(conn, snaps)
+    rows = conn.execute(
+        "SELECT snapshot_type, price FROM price_snapshots WHERE market_id = ? ORDER BY snapshot_type",
+        ("0xa",),
+    ).fetchall()
+    assert rows == [("1h", 0.99), ("24h", 0.63)]
+
+
+def test_upsert_snapshots_overwrites_on_conflict(conn):
+    upsert_markets(conn, [_market("0xa")])
+    upsert_snapshots(conn, [_snapshot("0xa", "1h", 0.50)])
+    upsert_snapshots(conn, [_snapshot("0xa", "1h", 0.99)])
+    rows = conn.execute(
+        "SELECT price FROM price_snapshots WHERE market_id = ? AND snapshot_type = ?",
+        ("0xa", "1h"),
+    ).fetchall()
+    assert rows == [(0.99,)]
+
+
+# ---------- markets_missing_history ----------
+
+def test_markets_missing_history_empty_when_all_have_ticks(conn):
+    upsert_markets(conn, [_market("0xa"), _market("0xb")])
+    insert_price_ticks(conn, [_tick("0xa", 0, 0.5), _tick("0xb", 0, 0.5)])
+    assert markets_missing_history(conn) == []
+
+
+def test_markets_missing_history_returns_unticked_markets(conn):
+    upsert_markets(conn, [_market("0xa"), _market("0xb"), _market("0xc")])
+    insert_price_ticks(conn, [_tick("0xa", 0, 0.5)])
+    assert sorted(markets_missing_history(conn)) == ["0xb", "0xc"]
