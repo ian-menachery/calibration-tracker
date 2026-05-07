@@ -30,6 +30,7 @@ def _market(market_id: str = "0xabc", **overrides) -> Market:
         resolved_value=1.0,
         total_volume_usd=12345.67,
         fetched_at=datetime(2026, 5, 6, 12, 0, 0, tzinfo=timezone.utc),
+        yes_token_id="21742633143463906290569050155826241533067272736897614950488156847949938836455",
     )
     base.update(overrides)
     return Market(**base)

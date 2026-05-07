@@ -152,6 +152,7 @@ def _to_market(m: GammaMarket, fetched_at: datetime) -> Market:
         resolved_value=1.0 if won else 0.0,
         total_volume_usd=m.volume_num,
         fetched_at=fetched_at,
+        yes_token_id=m.clob_token_ids[0],
     )
 
 

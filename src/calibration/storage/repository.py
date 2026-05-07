@@ -28,6 +28,7 @@ class Market:
     resolved_value: float | None
     total_volume_usd: float | None
     fetched_at: datetime
+    yes_token_id: str | None  # nullable for migrated rows pre-backfill; always set after re-discover
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,11 @@ def init_db(path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(_SCHEMA_PATH.read_text())
+    # Ad-hoc migration: pre-3a-fix DBs are missing markets.yes_token_id.
+    # CREATE TABLE IF NOT EXISTS skips altering existing tables, so add it here.
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(markets)").fetchall()}
+    if "yes_token_id" not in cols:
+        conn.execute("ALTER TABLE markets ADD COLUMN yes_token_id TEXT")
     conn.commit()
     return conn
 
@@ -67,6 +73,7 @@ def upsert_markets(conn: sqlite3.Connection, markets: Iterable[Market]) -> int:
             m.resolved_value,
             m.total_volume_usd,
             m.fetched_at.isoformat(),
+            m.yes_token_id,
         )
         for m in markets
     ]
@@ -74,8 +81,9 @@ def upsert_markets(conn: sqlite3.Connection, markets: Iterable[Market]) -> int:
         """
         INSERT OR REPLACE INTO markets (
             market_id, slug, question, category, market_type, parent_event_id,
-            end_date, resolved_outcome, resolved_value, total_volume_usd, fetched_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            end_date, resolved_outcome, resolved_value, total_volume_usd, fetched_at,
+            yes_token_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )

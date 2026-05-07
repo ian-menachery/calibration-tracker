@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS markets (
     resolved_outcome TEXT,
     resolved_value   REAL,
     total_volume_usd REAL,
-    fetched_at       TEXT NOT NULL     -- ISO 8601 UTC
+    fetched_at       TEXT NOT NULL,    -- ISO 8601 UTC
+    yes_token_id     TEXT              -- CLOB token id for the YES outcome; needed by Stage 2
 );
 
 CREATE TABLE IF NOT EXISTS raw_price_history (
