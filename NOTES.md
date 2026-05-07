@@ -41,6 +41,28 @@ is around 2024-01-31 (probe at 2024-01-04 returned 0 ticks; probe at
 Stage 1 must derive snapshot-eligibility from CLOB data, not from Gamma's
 start date field — otherwise we'll over-count markets as having T-7d data.
 
+### CLOB drops connections occasionally during long backfills
+Discovered: 2026-05-07, Phase 3 backfill
+Mid-run, the CLOB `/prices-history` endpoint occasionally drops the
+connection without sending a response (httpx.RemoteProtocolError). It is
+NOT a 4xx/5xx response — it's a connection-level disconnect, so catching
+only httpx.HTTPStatusError will let it escape and kill the run. Catch
+httpx.HTTPError (the base class — covers HTTPStatusError, ConnectError,
+ReadTimeout, RemoteProtocolError, etc.). Per-market commits plus
+INSERT OR IGNORE mean partial progress is saved; --resume picks up
+missing markets on the next run. The full 4513-market backfill survived
+exactly one such drop (4512 fetched, 1 skipped).
+
+### Gamma did not persist clob_token_ids in the markets table (Phase 2 oversight)
+Discovered: 2026-05-07, before Phase 3b
+ARCHITECTURE.md sec 4 doesn't list a token column on the markets table,
+so Phase 2's discovery -> Market mapper dropped `clob_token_ids[0]`.
+Stage 2 needs that token to call /prices-history. Fixed in commit 3a-fix
+(see git log) by adding a nullable `yes_token_id TEXT` column with an
+ad-hoc ALTER TABLE migration in init_db, then re-running discover to
+backfill existing rows. Future schema additions can follow the same
+pattern (PRAGMA table_info check + ALTER TABLE ADD COLUMN).
+
 ## Session log
 
 ### 2026-05-06
@@ -56,6 +78,27 @@ Immediate next step: pick a volume-floor option (recommended A = $1M floor,
 yields ~5k fetched / ~1.5–2.5k binary kept after filter), update CLI default and
 probably ARCHITECTURE.md sec 12.1, then re-run and commit 2c.
 Volume floor chosen: $1M, with category-bias caveat to be acknowledged in writeup.
+
+### 2026-05-07
+Wrapped Phase 3: Stages 2-3 implemented, tested, and backfilled end-to-end.
+data/markets.db now holds 4,522 markets (7.16M raw ticks at hourly+minute
+split fidelity, ~700 MB) plus 16,341 snapshots in price_snapshots — 100%
+of markets have at least one snapshot, 64.2% have all four (the 7d slot is
+the constraint, expected for sports / short-duration markets). Six new
+commits on main: 3a (schema + repo helpers), 3a-fix (yes_token_id retro-
+add — Phase 2 dropped clob_token_ids; see new gotcha above), 3b (CLOB
+client + fetch-prices CLI), 3b-fix (broaden to httpx.HTTPError after a
+RemoteProtocolError mid-backfill; see new gotcha above), 3c (snapshot
+extraction in src/calibration/analysis/snapshots.py with 7 unit tests),
+plus this docs commit. Headline preview at T-1h: 2,579 markets priced
+[0.0, 0.1) realized 0.0% and 1,914 markets priced [0.9, 1.0) realized
+99.9% — extreme-bucket calibration looks essentially perfect, but middle
+buckets are very thin (5-6 markets each) since most markets have already
+collapsed to ~0 or ~1 by the final hour. The interesting calibration
+tension will live at T-7d, which is Phase 4 territory. Three throwaway
+viewer scripts left untracked in the working tree (_view_markets_temp.py,
+_view_snapshots_temp.py, _view_phase3_temp.py) — useful for ad-hoc DB
+inspection but not load-bearing; safe to delete or keep.
 
 ## v2 Considerations
 

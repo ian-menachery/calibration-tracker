@@ -41,4 +41,4 @@ This is non-negotiable. If you find yourself drafting code in your head before s
 
 Always know which phase from ARCHITECTURE.md §9 we're in. If a request seems to belong to a later phase, say so and ask whether to skip ahead or stay focused.
 
-Current phase: **Phase 0** (reading existing code, deciding what to keep).
+Current phase: **Phase 3 done** (Stages 1-3; 4,522 markets backfilled with raw price history at split fidelity, 16,341 snapshots in `price_snapshots` covering close/1h/24h/7d). Next up: Phase 4 (calibration analysis: bucketing, Brier score, log loss, bootstraps).
