@@ -9,7 +9,14 @@ from pathlib import Path
 
 from calibration.polymarket.client import GammaClient
 from calibration.polymarket.discovery import discover_markets
-from calibration.storage.repository import init_db, upsert_markets
+from calibration.polymarket.prices import CLOBClient, fetch_market_history
+from calibration.storage.repository import (
+    get_market,
+    init_db,
+    insert_price_ticks,
+    markets_missing_history,
+    upsert_markets,
+)
 
 
 def cmd_discover(args: argparse.Namespace) -> int:
@@ -31,6 +38,41 @@ def cmd_discover(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_fetch_prices(args: argparse.Namespace) -> int:
+    db_path = Path(args.db)
+    conn = init_db(db_path)
+    try:
+        if args.all:
+            market_ids = [r[0] for r in conn.execute("SELECT market_id FROM markets").fetchall()]
+        else:
+            market_ids = markets_missing_history(conn)
+        if args.limit is not None:
+            market_ids = market_ids[: args.limit]
+
+        print(f"Fetching prices for {len(market_ids)} markets ...")
+        fetched = 0
+        skipped = 0
+        with CLOBClient() as client:
+            for i, mid in enumerate(market_ids, 1):
+                market = get_market(conn, mid)
+                if market is None:
+                    skipped += 1
+                    continue
+                ticks = fetch_market_history(client, market)
+                if ticks is None:
+                    print(f"  [{i}/{len(market_ids)}] skip {market.slug[:60]}: error or no data")
+                    skipped += 1
+                    continue
+                insert_price_ticks(conn, ticks)
+                fetched += 1
+                if i % 50 == 0:
+                    print(f"  [{i}/{len(market_ids)}] {fetched} fetched, {skipped} skipped")
+        print(f"Done. Fetched {fetched} markets, skipped {skipped}.")
+    finally:
+        conn.close()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="calibration")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -40,6 +82,12 @@ def main(argv: list[str] | None = None) -> int:
     p_discover.add_argument("--volume-floor", type=float, default=1_000_000.0)
     p_discover.add_argument("--db", default="data/markets.db")
     p_discover.set_defaults(func=cmd_discover)
+
+    p_fetch = sub.add_parser("fetch-prices", help="Stage 2: fetch CLOB price history per market")
+    p_fetch.add_argument("--db", default="data/markets.db")
+    p_fetch.add_argument("--limit", type=int, default=None, help="cap markets per run")
+    p_fetch.add_argument("--all", action="store_true", help="re-fetch even markets that already have ticks")
+    p_fetch.set_defaults(func=cmd_fetch_prices)
 
     args = parser.parse_args(argv)
     return args.func(args)
