@@ -40,3 +40,27 @@ is around 2024-01-31 (probe at 2024-01-04 returned 0 ticks; probe at
 2024-02-01 returned 24 ticks with the earliest at 2024-01-31T19:00:02Z).
 Stage 1 must derive snapshot-eligibility from CLOB data, not from Gamma's
 start date field — otherwise we'll over-count markets as having T-7d data.
+
+## Session log
+
+### 2026-05-06
+Closed Phase 0 (KEEP_KILL audit), completed Phase 1 spike (prices-history viable,
+all three ARCHITECTURE.md sec 3 checks PASS, pushed to private GitHub), and shipped
+the first two of three Phase 2 commits — 2a: storage layer with markets table and
+6 passing tests; 2b: GammaClient + GammaMarket pydantic model + raw fetcher.
+Phase 2c is mid-flight: `cli.py` and `discover_markets()` filter+map are written
+but the end-to-end backfill blew up against Gamma's offset=100,000 pagination cap,
+because Polymarket has >100k closed markets above $1k volume — the original
+ARCHITECTURE.md sec 12.1 $1k floor is far too low.
+Immediate next step: pick a volume-floor option (recommended A = $1M floor,
+yields ~5k fetched / ~1.5–2.5k binary kept after filter), update CLI default and
+probably ARCHITECTURE.md sec 12.1, then re-run and commit 2c.
+Volume floor chosen: $1M, with category-bias caveat to be acknowledged in writeup.
+
+## v2 Considerations
+
+### Lower volume floor to $100k for category diversity
+The v1 $1M floor heavily concentrates the dataset in elections, crypto, and major
+sports. v2 should consider lowering to $100k (likely chunking discovery by
+end_date_max windows to fit under Gamma's 100k offset cap) for broader category
+coverage.

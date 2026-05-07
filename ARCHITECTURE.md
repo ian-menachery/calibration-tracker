@@ -227,7 +227,7 @@ This is the AI-slop firewall. The "state the plan first" rule especially — it'
 
 These are real but don't block starting:
 
-1. **Volume floor for inclusion.** $1k initial guess. Refine after seeing the volume distribution in Stage 1.
+1. **Volume floor for inclusion.** $1M for v1. (Original guess of $1k was unworkable: Gamma's `/markets` caps pagination at offset=100,000 and Polymarket has >100k closed markets above $1k volume.) Biases v1 toward elections/crypto/major sports — flag in writeup. v2 may revisit the floor based on what v1's category distribution actually looks like.
 2. **How to handle markets that resolved by Polymarket's UMA dispute process.** Probably exclude — they're a different population. Tag in metadata, decide at analysis time.
 3. **Bootstrap method for confidence intervals.** Standard nonparametric bootstrap on bucket realized rates is fine for v1. Wilson intervals are an alternative; don't overthink.
 4. **Time zones.** Polymarket timestamps are UTC. Store everything UTC. Do not convert until display.
