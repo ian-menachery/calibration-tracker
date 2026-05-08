@@ -41,4 +41,4 @@ This is non-negotiable. If you find yourself drafting code in your head before s
 
 Always know which phase from ARCHITECTURE.md §9 we're in. If a request seems to belong to a later phase, say so and ask whether to skip ahead or stay focused.
 
-Current phase: **Phase 5 done** (first writeup draft at `reports/v1_calibration.md`, ~1700 words; embeds the 4 calibration PNGs from Phase 4). Next up: Phase 6 (multi-outcome / negRisk decomposition) or Phase 7 (polish + publish — README, repo public, final wordsmithing).
+Current phase: **Phase 7 done** (README + MIT LICENSE landed, writeup polished, Polymarket-comparison section added, repo flipped public at <https://github.com/ian-menachery/calibration-tracker>). v1 is shipped — only thing left from ARCHITECTURE.md §9 done-when is "writeup posted" which is the user's call (HN / X / blog). v2 backlog: Phase 6 (multi-outcome / negRisk), lower volume floor, replace slug heuristic with Gamma `events` tags, Kalshi cross-platform comparison.
