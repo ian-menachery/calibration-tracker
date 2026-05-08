@@ -164,3 +164,26 @@ def markets_with_history(conn: sqlite3.Connection) -> list[str]:
     """Market IDs that have at least one row in raw_price_history. Drives Stage 3."""
     rows = conn.execute("SELECT DISTINCT market_id FROM raw_price_history").fetchall()
     return [r[0] for r in rows]
+
+
+def select_snapshot_join(
+    conn: sqlite3.Connection, snapshot_type: str
+) -> list[tuple]:
+    """markets x price_snapshots for one snapshot type. Drives Stage 4 analysis.
+
+    Returns rows of (market_id, slug, predicted_price, resolved_value,
+    total_volume_usd, end_date). Filters out rows missing resolved_value
+    defensively (shouldn't happen with our discover filter, but the math
+    can't handle NULL outcomes).
+    """
+    return conn.execute(
+        """
+        SELECT m.market_id, m.slug, s.price, m.resolved_value,
+               m.total_volume_usd, m.end_date
+        FROM markets m
+        JOIN price_snapshots s ON s.market_id = m.market_id
+        WHERE s.snapshot_type = ?
+          AND m.resolved_value IS NOT NULL
+        """,
+        (snapshot_type,),
+    ).fetchall()
