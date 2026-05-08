@@ -45,7 +45,7 @@ the bottom.
 - **Source:** Polymarket's public Gamma API for market metadata and the
   CLOB `prices-history` endpoint for time series.
 - **Filter:** `closed=true` resolved markets above $1M in trading volume,
-  ending on or after 2024-01-04. The volume floor was raised from the
+  ending on or after 2024-01-01. The volume floor was raised from the
   initial guess of $1k after discovering Gamma's `/markets` endpoint caps
   pagination at offset 100,000 — Polymarket has well over 100k closed
   markets above $1k, so the long tail is unreachable. $1M biases the
@@ -55,6 +55,10 @@ the bottom.
   modeled as `negRisk` sub-markets on Polymarket (e.g., the
   individual-candidate components of "who will win the 2024 election")
   are excluded from v1; they'll join the dataset in a later phase.
+- **Mix:** sports is the majority by count — 54.5% of all markets above
+  the $1M floor. Crypto and "other" are 16% each, geopolitics 9%,
+  politics 4%, entertainment <1%. The sports concentration matters for
+  reading the overall numbers below.
 - **Resolution window:** 2024-01-10 → 2026-05-07. About 16 months of
   resolved markets.
 
@@ -124,8 +128,8 @@ market has already done most of its work.
 
 ![Calibration at T-24h](figures/calibration_24h.png)
 
-24 hours out, real uncertainty emerges — bars stretch noticeably toward
-the middle of the chart, particularly for prices in the 0.4-0.7 range.
+24 hours out, real uncertainty emerges — the middle buckets pull away
+from the diagonal, particularly for prices in the 0.4-0.7 range.
 
 ![Calibration at T-7d](figures/calibration_7d.png)
 
@@ -175,15 +179,15 @@ out — extremely well calibrated.
 
 ### Volume doesn't rescue the 7-day picture
 
-| Volume quartile | n | Brier (T-7d) |
-|---|---|---|
-| q1 (lowest, ~$1M-$1.4M) | 727 | 0.190 |
-| q2 | 726 | 0.180 |
-| q3 | 726 | 0.200 |
-| q4 (highest, $5M+) | 726 | 0.170 |
+| Volume quartile | range (USD) | n | Brier (T-7d) |
+|---|---|---|---|
+| q1 | $1.0M – $1.3M | 727 | 0.190 |
+| q2 | $1.3M – $1.8M | 726 | 0.180 |
+| q3 | $1.8M – $3.0M | 726 | 0.200 |
+| q4 | $3.0M – $269M | 726 | 0.170 |
 
-Higher-volume markets are slightly better-calibrated at T-7d but the
-relationship isn't monotonic, and the gap between best (q4 at 0.170)
+Higher-volume markets are slightly better calibrated at T-7d but the
+relationship isn't monotonic, and the spread between best (q4 at 0.170)
 and worst (q3 at 0.200) is small. The category effect dominates the
 volume effect.
 
@@ -198,9 +202,11 @@ A few things to keep in mind before extrapolating from this:
   elections, geopolitics, crypto, and major US sports. The long tail of
   $1k-$1M markets is excluded for a tractable v1.
 - **Coarse categorization.** Categories are assigned by a slug-prefix
-  heuristic, not Polymarket's own tags. About 20-30% of markets fall
-  into "other" or get matched by a less-than-ideal regex. v2 will swap
-  this for proper category tags from Gamma's `events` field.
+  heuristic, not Polymarket's own tags. About 16% of markets fall into
+  "other", and there's almost certainly some leakage between the named
+  categories (e.g. an Iran-sanctions market matching the politics regex
+  before geopolitics). v2 will swap this for proper category tags from
+  Gamma's `events` field.
 - **Multi-outcome events excluded.** The most famous Polymarket market
   of all — the 2024 US Presidential Election ($1.5B in volume) — is
   *not* in this dataset because it's structured as a `negRisk`
@@ -257,3 +263,7 @@ covered by 61 unit tests.
 
 Stack: Python 3.11+, httpx, pandas, numpy, matplotlib, sqlite3, pydantic,
 pytest, ruff. No other dependencies.
+
+---
+
+*Ian Menachery · May 2026 · MIT-licensed · Repo: <https://github.com/ian-menachery/calibration-tracker>*
