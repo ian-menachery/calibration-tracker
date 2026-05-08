@@ -221,6 +221,40 @@ A few things to keep in mind before extrapolating from this:
   UMA dispute process are included undifferentiated. Treating them as
   a separate cohort is a v2 follow-up.
 
+## How this compares to Polymarket's own accuracy page
+
+Polymarket publishes its own calibration numbers at
+<https://polymarket.com/accuracy>. Their page reports an overall Brier
+score of 0.0627 across "all resolved polymarkets" (no volume floor
+disclosed), plus a hit-rate metric — the share of markets where the
+final leading outcome matched the resolution — that runs from 96.7%
+four hours before resolution down to 90.4% one month out. Their Brier
+is broken out by volume tier (under $1k through $1M+); they reference a
+Dune dashboard for deeper Brier analysis.
+
+| | Polymarket's page | This writeup |
+|---|---|---|
+| Horizons | 4h / 12h / 1d / 1w / 1mo | close / 1h / 24h / 7d |
+| Sample | "all resolved polymarkets" | 4,522 standalone binary, $1M+ volume |
+| Metrics | Brier, hit rate | Brier, log loss, bootstrap CIs |
+| Subgroup breakdown | volume tier | **category** + volume quartile |
+| Code / data | closed | MIT, in this repo |
+
+The two analyses overlap on T-24h ≈ 1 day and T-7d ≈ 1 week. We don't
+cover the 4h / 12h / 1mo horizons (the 1-month one would require
+extending Stage 2's price-fetch window past CLOB's ~14-day cap), and
+their sample is broader than ours. What this writeup adds that the
+official page doesn't: the **category breakdown** — the sports-vs-
+everything-else divergence at T-7d isn't visible when you only slice by
+volume — plus log loss alongside Brier, per-bucket realized rates with
+bootstrap CIs, and an open dataset and code path that anyone can re-run.
+
+A direct numeric comparison isn't apples-to-apples: their headline
+Brier of 0.0627 pools across all five horizons, doesn't apply a $1M
+floor, and presumably includes the multi-outcome `negRisk` sub-markets
+we exclude. The two should be read as complementary rather than
+contradictory.
+
 ## What's next
 
 - **Phase 6 — multi-outcome decomposition.** The most expensive markets
