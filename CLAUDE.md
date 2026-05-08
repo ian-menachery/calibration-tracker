@@ -41,4 +41,4 @@ This is non-negotiable. If you find yourself drafting code in your head before s
 
 Always know which phase from ARCHITECTURE.md §9 we're in. If a request seems to belong to a later phase, say so and ask whether to skip ahead or stay focused.
 
-Current phase: **Phase 3 done** (Stages 1-3; 4,522 markets backfilled with raw price history at split fidelity, 16,341 snapshots in `price_snapshots` covering close/1h/24h/7d). Next up: Phase 4 (calibration analysis: bucketing, Brier score, log loss, bootstraps).
+Current phase: **Phase 4 done** (Stage 4 calibration analysis; 4 calibration curve PNGs in `reports/figures/` + per-bucket and per-subgroup CSVs; overall Brier 0.0001 / 0.0018 / 0.163 / 0.185 at close / 1h / 24h / 7d; sports markets at T-7d are near chance baseline at Brier 0.238). Next up: Phase 5 (writeup draft in `reports/v1_calibration.md`).
