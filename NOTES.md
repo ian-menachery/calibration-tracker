@@ -107,3 +107,13 @@ The v1 $1M floor heavily concentrates the dataset in elections, crypto, and majo
 sports. v2 should consider lowering to $100k (likely chunking discovery by
 end_date_max windows to fit under Gamma's 100k offset cap) for broader category
 coverage.
+
+### Replace slug-heuristic categorization with Gamma `events` tags
+Phase 4's `categorize_slug` is a regex/prefix heuristic (sports / politics /
+geopolitics / crypto / entertainment / other). It's coarse — markets that
+don't match a known prefix land in "other" and could be ~20-30% of the data.
+v2 should backfill from Gamma's `events` field, which contains Polymarket's
+own category tags. Will require: (1) ALTER TABLE markets ADD COLUMN tags TEXT
+(or a separate market_tags table), (2) re-run discover with the events field
+captured by the GammaMarket pydantic model, (3) flip `analyze` to read
+canonical tags instead of calling categorize_slug. Math layer stays the same.
