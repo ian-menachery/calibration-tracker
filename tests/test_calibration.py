@@ -9,6 +9,7 @@ from calibration.analysis.calibration import (
     bucket_5pct,
     bucket_decile,
     categorize_slug,
+    compute_metrics,
     load_calibration_frame,
 )
 from calibration.storage.repository import (
@@ -141,6 +142,28 @@ def test_load_calibration_frame_roundtrip():
         assert df.loc[0, "category"] == "sports"
     finally:
         conn.close()
+
+
+# ---------- compute_metrics ----------
+
+def test_compute_metrics_overall():
+    df = _frame([0.7, 0.3], [1, 0])
+    out = compute_metrics(df)
+    assert len(out) == 1
+    assert out.loc[0, "subgroup"] == "overall"
+    assert out.loc[0, "n_markets"] == 2
+    assert out.loc[0, "brier_score"] == pytest.approx(0.09)
+
+
+def test_compute_metrics_grouped_returns_one_row_per_group():
+    df = pd.DataFrame({
+        "predicted": [0.7, 0.3, 0.5, 0.5],
+        "outcome": [1, 0, 1, 0],
+        "category": ["sports", "sports", "politics", "politics"],
+    })
+    out = compute_metrics(df, group_col="category")
+    assert set(out["subgroup"]) == {"category=sports", "category=politics"}
+    assert (out["n_markets"] == 2).all()
 
 
 def test_load_calibration_frame_filters_to_requested_snapshot_type():

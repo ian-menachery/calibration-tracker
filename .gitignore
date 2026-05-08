@@ -7,3 +7,11 @@ venv/
 .DS_Store
 *.egg-info/
 .pytest_cache/
+
+# Phase 4 auto-generated analysis outputs. Phase 5 writeup (reports/*.md)
+# is intentionally NOT ignored.
+reports/figures/
+reports/calibration_*.csv
+
+# Throwaway local viewer scripts (created ad-hoc during sessions).
+_view_*_temp.py

@@ -7,10 +7,20 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
+
+from calibration.analysis.calibration import (
+    bucket_5pct,
+    bucket_decile,
+    compute_metrics,
+    load_calibration_frame,
+)
 from calibration.analysis.snapshots import extract_snapshots
 from calibration.polymarket.client import GammaClient
 from calibration.polymarket.discovery import discover_markets
 from calibration.polymarket.prices import CLOBClient, fetch_market_history
+from calibration.reporting.charts import plot_calibration_curve
 from calibration.storage.repository import (
     get_market,
     get_ticks_for_market,
@@ -21,6 +31,8 @@ from calibration.storage.repository import (
     upsert_markets,
     upsert_snapshots,
 )
+
+SNAPSHOT_TYPES = ("close", "1h", "24h", "7d")
 
 
 def cmd_discover(args: argparse.Namespace) -> int:
@@ -39,6 +51,63 @@ def cmd_discover(args: argparse.Namespace) -> int:
     finally:
         conn.close()
     print(f"Wrote {stats.kept} markets to {db_path}")
+    return 0
+
+
+def cmd_analyze(args: argparse.Namespace) -> int:
+    db_path = Path(args.db)
+    out_dir = Path(args.out)
+    figures_dir = out_dir / "figures"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(args.seed)
+
+    all_buckets: list[pd.DataFrame] = []
+    all_metrics: list[pd.DataFrame] = []
+    conn = init_db(db_path)
+    try:
+        for snap in SNAPSHOT_TYPES:
+            df = load_calibration_frame(conn, snap)
+            if df.empty:
+                print(f"[{snap}] no rows; skipping")
+                continue
+            df["volume_quartile"] = pd.qcut(
+                df["volume"], q=4, labels=["q1", "q2", "q3", "q4"], duplicates="drop"
+            )
+            for label, edges_fn in [("decile", bucket_decile), ("pct5", bucket_5pct)]:
+                for weighting, weight_col in [("market", None), ("volume", "volume")]:
+                    buckets = edges_fn(df, n_iter=args.bootstrap, rng=rng, weight_col=weight_col)
+                    buckets["snapshot_type"] = snap
+                    buckets["bucketing"] = label
+                    buckets["weighting"] = weighting
+                    all_buckets.append(buckets)
+
+            metrics_overall = compute_metrics(df)
+            metrics_cat = compute_metrics(df, group_col="category")
+            metrics_vol = compute_metrics(df, group_col="volume_quartile")
+            for m in (metrics_overall, metrics_cat, metrics_vol):
+                m["snapshot_type"] = snap
+                all_metrics.append(m)
+
+            decile_market = bucket_decile(df, n_iter=args.bootstrap, rng=rng, weight_col=None)
+            chart_path = figures_dir / f"calibration_{snap}.png"
+            plot_calibration_curve(
+                decile_market,
+                title=f"Calibration: T-{snap} (market-weighted, decile)",
+                save_to=chart_path,
+            )
+            br = compute_metrics(df).loc[0]
+            print(f"[{snap}] n={int(br['n_markets']):>5,}  "
+                  f"brier={br['brier_score']:.4f}  log_loss={br['log_loss']:.4f}  "
+                  f"-> {chart_path}")
+    finally:
+        conn.close()
+
+    if all_buckets:
+        pd.concat(all_buckets, ignore_index=True).to_csv(out_dir / "calibration_buckets.csv", index=False)
+    if all_metrics:
+        pd.concat(all_metrics, ignore_index=True).to_csv(out_dir / "calibration_metrics.csv", index=False)
+    print(f"Wrote bucket-level + metrics CSVs to {out_dir}/")
     return 0
 
 
@@ -118,6 +187,13 @@ def main(argv: list[str] | None = None) -> int:
     p_snap = sub.add_parser("extract-snapshots", help="Stage 3: extract calibration snapshots into price_snapshots")
     p_snap.add_argument("--db", default="data/markets.db")
     p_snap.set_defaults(func=cmd_extract_snapshots)
+
+    p_an = sub.add_parser("analyze", help="Stage 4: bucket markets, compute Brier/log loss, save calibration charts")
+    p_an.add_argument("--db", default="data/markets.db")
+    p_an.add_argument("--out", default="reports", help="output directory for CSVs and figures/")
+    p_an.add_argument("--bootstrap", type=int, default=1000, help="bootstrap iterations for per-bucket CIs")
+    p_an.add_argument("--seed", type=int, default=42, help="rng seed for reproducible bootstrap CIs")
+    p_an.set_defaults(func=cmd_analyze)
 
     args = parser.parse_args(argv)
     return args.func(args)

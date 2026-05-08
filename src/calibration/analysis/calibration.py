@@ -14,7 +14,7 @@ from typing import Sequence
 import numpy as np
 import pandas as pd
 
-from calibration.analysis.metrics import bootstrap_ci
+from calibration.analysis.metrics import bootstrap_ci, brier_score, log_loss
 from calibration.storage.repository import select_snapshot_join
 
 # Slug-prefix heuristic. Order matters — first match wins, so geopolitics
@@ -157,3 +157,23 @@ def bucket_decile(df, n_iter=1000, rng=None, weight_col=None):
 
 def bucket_5pct(df, n_iter=1000, rng=None, weight_col=None):
     return bucket(df, np.arange(0.0, 1.01, 0.05), weight_col=weight_col, n_iter=n_iter, rng=rng)
+
+
+def compute_metrics(df: pd.DataFrame, group_col: str | None = None) -> pd.DataFrame:
+    """Brier + log loss overall, or grouped by `group_col` (e.g. 'category')."""
+    if group_col is None:
+        return pd.DataFrame([{
+            "subgroup": "overall",
+            "n_markets": len(df),
+            "brier_score": brier_score(df["predicted"], df["outcome"]) if len(df) else float("nan"),
+            "log_loss": log_loss(df["predicted"], df["outcome"]) if len(df) else float("nan"),
+        }])
+    rows = []
+    for value, group in df.groupby(group_col, observed=True):
+        rows.append({
+            "subgroup": f"{group_col}={value}",
+            "n_markets": len(group),
+            "brier_score": brier_score(group["predicted"], group["outcome"]),
+            "log_loss": log_loss(group["predicted"], group["outcome"]),
+        })
+    return pd.DataFrame(rows)
