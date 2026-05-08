@@ -79,6 +79,30 @@ yields ~5k fetched / ~1.5–2.5k binary kept after filter), update CLI default a
 probably ARCHITECTURE.md sec 12.1, then re-run and commit 2c.
 Volume floor chosen: $1M, with category-bias caveat to be acknowledged in writeup.
 
+### 2026-05-08
+Shipped v1 end-to-end. Phase 4 (Stage 4 calibration analysis) landed in
+three commits — 4a (`metrics.py`: brier_score, log_loss, bootstrap_ci with
+13 known-input tests), 4b (`calibration.py`: load_calibration_frame, slug-
+heuristic categorize_slug, bucket / bucket_decile / bucket_5pct with both
+market- and volume-weighting, 25 tests), 4c (`reporting/charts.py` +
+`analyze` CLI subcommand). End-to-end run on the 4,522-market dataset
+produced overall Brier 0.0001 / 0.0018 / 0.163 / 0.185 across close / 1h /
+24h / 7d. **Headline finding:** sports at T-7d sit at Brier 0.238 (near
+the 0.25 chance baseline) while politics and geopolitics carry real signal
+at 0.116 and 0.129. Sports is also 54.5% of the dataset by count, so the
+overall T-7d number is dragged toward the sports number — the category
+breakdown is the load-bearing slice. Phase 5 landed the writeup
+(reports/v1_calibration.md, ~1,700 words, embeds the four PNGs from
+Phase 4). Phase 7 closed v1: README + MIT LICENSE, polish pass on the
+writeup (correctness fixes against calibration_metrics.csv — date typo,
+volume-quartile boundaries, "other" percentage from a guessed 20-30% to
+the measured 16%, "bars" → "buckets" wording), Polymarket-comparison
+amendment after the user surfaced https://polymarket.com/accuracy as
+directly comparable prior work, and repo flipped public at
+github.com/ian-menachery/calibration-tracker. 61/61 tests pass; ruff
+clean. Posting to HN/X/blog is the last ARCHITECTURE.md §9 done-when item
+and is a user action — everything else is shipped.
+
 ### 2026-05-07
 Wrapped Phase 3: Stages 2-3 implemented, tested, and backfilled end-to-end.
 data/markets.db now holds 4,522 markets (7.16M raw ticks at hourly+minute
@@ -111,9 +135,13 @@ coverage.
 ### Replace slug-heuristic categorization with Gamma `events` tags
 Phase 4's `categorize_slug` is a regex/prefix heuristic (sports / politics /
 geopolitics / crypto / entertainment / other). It's coarse — markets that
-don't match a known prefix land in "other" and could be ~20-30% of the data.
-v2 should backfill from Gamma's `events` field, which contains Polymarket's
-own category tags. Will require: (1) ALTER TABLE markets ADD COLUMN tags TEXT
-(or a separate market_tags table), (2) re-run discover with the events field
-captured by the GammaMarket pydantic model, (3) flip `analyze` to read
-canonical tags instead of calling categorize_slug. Math layer stays the same.
+don't match a known prefix land in "other" (~16% of the dataset on the v1
+data, lower than the 20-30% I'd guessed before measuring). There's also
+likely some leakage between the named categories (e.g. an Iran-sanctions
+market might match the `politics` regex before `geopolitics` because order
+matters in `_CATEGORY_PATTERNS`). v2 should backfill from Gamma's `events`
+field, which contains Polymarket's own category tags. Will require:
+(1) ALTER TABLE markets ADD COLUMN tags TEXT (or a separate market_tags
+table), (2) re-run discover with the events field captured by the
+GammaMarket pydantic model, (3) flip `analyze` to read canonical tags
+instead of calling categorize_slug. Math layer stays the same.
