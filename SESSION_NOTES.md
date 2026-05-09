@@ -3,57 +3,68 @@
 Per-session handoff: what got done, where things stand, what to pick up next.
 For the running list of API gotchas and v2 considerations, see `NOTES.md`.
 
-## 2026-05-08 — v1.1a started (real-categories foundation)
+## 2026-05-08 — v1.1 done (tag-based categorization shipped)
 
 ### Summary
-Picked up the v1.1 work the v1 retrospective ranked #1: replace the
-slug-heuristic categorization with Polymarket's own tags from Gamma's
-`events` field. Shape probe mid-plan revealed `/markets` doesn't carry
-tags — they only appear on `/events/{id}` — so the plan was revised to
-add a new resumable `fetch-tags` stage between discover and fetch-prices,
-mirroring the fetch-prices pattern. v1.1a landed the storage foundation
-only.
+Replaced the v1 slug-heuristic categorizer with Polymarket's own `tags`
+taxonomy via the Gamma `/events/{id}` endpoint. Three sub-commits in
+one session: **v1.1a** (storage foundation: `market_tags` table +
+`markets.gamma_event_id` migration + repo helpers), **v1.1b** (new
+resumable `fetch-tags` stage; full backfill of 4,527 markets in
+~15 min — 20,267 tag rows, 744 distinct slugs, 0 errors), **v1.1c**
+(`_CATEGORY_MAPPING` + flipped `load_calibration_frame` to use tags
+with slug-heuristic fallback). Re-ran `analyze`, refreshed the
+writeup and README. Headline holds: sports T-7d Brier 0.238 → 0.236,
+politics 0.116 → 0.106; the "other" bucket shrank from 370 to 83 at
+T-7d (the v1.1 win).
 
 ### Current state
 **Complete:**
-- v1.1a: `market_tags(market_id, tag_slug)` side-table +
-  `markets.gamma_event_id` column, both migrated via PRAGMA + ALTER
-  TABLE; `Market` dataclass extended; `insert_market_tags` /
-  `get_tags_for_market` / `markets_missing_tags` helpers;
-  `_to_market` now captures `events[0].id`. 66/66 tests; ruff clean.
-- Cleanup pass: removed `KEEP_KILL.md` (Phase 0 artifact) and four
-  `_view_*_temp.py` scratch viewers.
-- 4,532 markets (10 more resolved since the morning's full discover)
-  all have `gamma_event_id` populated. `market_tags` table is empty
-  until v1.1b runs.
+- v1.1 fully shipped. Five commits pushed:
+  `4a2240f` (v1.1a storage),
+  `0051983` (v1.1b fetch-tags),
+  `764fb0e` (v1.1c analyze flip + writeup),
+  `f9918cd` (CLAUDE.md phase marker),
+  plus the v1.1 docs commit landing now.
+- 84/84 tests pass; ruff clean.
+- 4,532 markets all have `gamma_event_id` + at least one tag.
+- Public repo at github.com/ian-menachery/calibration-tracker reflects
+  the v1.1 numbers in both README and writeup.
 
-**In-progress:** v1.1b (the new fetch-tags stage).
+**In-progress:** none. v1.1 is done.
 
 ### Worth flagging
-- v1.1 plan is in `~/.claude/plans/give-me-the-plan-cozy-snail.md`,
-  updated mid-stream after the shape probe.
-- v1.1b will run ~4,532 extra Gamma calls × 0.2 s = ~15 min of API
-  time on the full backfill.
-- v1.1c's writeup update will shift the per-category Brier numbers;
-  the qualitative finding (sports much worse than politics at T-7d)
-  is almost certainly robust.
-- One new market has no `gamma_event_id` if its `events` array is
-  empty — none observed yet but the model handles it (Market field is
-  Optional, fetch-tags skips via `markets_missing_tags`).
+- Headline finding is robust to the categorization swap. Numbers moved
+  by ~0.01-0.02 across categories; the qualitative story didn't shift.
+- Entertainment cohort at T-7d went 0.077 → 0.154 with n=20 — flagged
+  in the writeup as small-sample noise.
+- `_CATEGORY_MAPPING` is conservative (~30-50 known tags per bucket,
+  curated from the top 25 most common slugs). The long-tail mapping
+  could be refined as part of any future v1.2 polish.
+- `categorize_slug` + `_CATEGORY_PATTERNS` are kept as the fallback
+  path for markets whose tags only match meta-slugs.
+- One throwaway file at root: `phase1_spike.py` — kept by user request
+  as a Phase 1 reference.
 
-### Next steps — v1.1b (fetch-tags stage)
-1. New `src/calibration/polymarket/tags.py` —
-   `fetch_event_tags(client, event_id) -> list[str] | None`. Hits
-   `/events/{event_id}`, parses `tags[].slug`, returns slug strings.
-   Catches `httpx.HTTPError` → None (resumable; matches prices.py).
-2. CLI `fetch-tags` subcommand with `--db --limit --all`. Default
-   mode reads `markets_missing_tags(conn)`.
-3. Smoke test on 5 markets, full backfill on ~4,532, then commit.
+### Next steps (v2 backlog, no work in flight)
+1. **Phase 6: multi-outcome / negRisk decomposition.** Adds the Trump
+   2024 election ($1.5B in volume, currently excluded) and other big
+   multi-candidate events. Largest single dataset expansion. 1-2
+   weekends.
+2. **Hit-rate metric** for apples-to-apples comparison with
+   Polymarket's accuracy page (their 96.7% / 90.4% headline). ~1 hour.
+3. **More horizons** (4h / 12h / 1mo) to match Polymarket's set. The
+   1mo horizon needs Stage 2 to chunk past CLOB's 14-day window cap.
+4. **Lower volume floor** to ~$100k for category diversity. Would need
+   chunked discovery to fit under Gamma's 100k offset cap.
+5. **GitHub Actions CI** running `pytest` on push (~30 min of work).
+6. **Kalshi cross-platform comparison** (deferred to v2 — biggest scope).
 
 ### Useful commands
 ```
-.venv\Scripts\python.exe -m pytest tests/ -q                                   # 66/66
-.venv\Scripts\python.exe -m calibration.cli discover --since 2024-01-01        # idempotent; backfills gamma_event_id
+.venv\Scripts\python.exe -m pytest tests/ -q                                   # 84/84
+.venv\Scripts\python.exe -m calibration.cli analyze --db data/markets.db       # rerun stage 4
+.venv\Scripts\python.exe -m calibration.cli fetch-tags --db data/markets.db    # idempotent v1.1b
 ```
 
 ## 2026-05-08 — v1 shipped (Phases 4, 5, 7 done; repo public)

@@ -79,6 +79,29 @@ yields ~5k fetched / ~1.5–2.5k binary kept after filter), update CLI default a
 probably ARCHITECTURE.md sec 12.1, then re-run and commit 2c.
 Volume floor chosen: $1M, with category-bias caveat to be acknowledged in writeup.
 
+### 2026-05-08 (v1.1 wrapped)
+Shipped v1.1 end-to-end across three sub-commits in one session.
+**v1.1b** added the resumable `fetch-tags` stage: new
+`src/calibration/polymarket/tags.py` with `fetch_event_tags(client,
+event_id)` that hits Gamma `/events/{id}` and parses `tags[].slug`,
+plus a `fetch-tags` CLI subcommand mirroring `fetch-prices`. Full
+backfill ran ~15 min on the live API: 4,527 markets fetched in one
+go with 0 errors, 4,532/4,532 markets now carry at least one tag,
+20,267 tag rows, 744 distinct slugs. **v1.1c** added
+`_CATEGORY_MAPPING` (frozensets per bucket, ordered so geopolitics
+beats politics for shared tags like "trump"); `categorize_market`
+wrapper preferring tags and falling back to the v1 slug heuristic
+for markets whose tags only intersect meta-slugs (`recurring`,
+`hit-price`, etc.); `load_calibration_frame` bulk-fetches tags via
+a new `get_tags_for_markets` storage helper. 18 new tests bring the
+suite to 84/84 (ruff clean). Re-ran `analyze`; refreshed
+`reports/v1_calibration.md` and `README.md` with new numbers and a
+v1.1 update note. **Headline holds:** sports T-7d Brier 0.238 →
+0.236, politics 0.116 → 0.106; the "other" bucket shrank from 370
+to 83 markets at T-7d (the v1.1 win — most "other" reclassified
+into the named buckets). PNGs are byte-identical to v1's since the
+overall decile curves don't depend on category labels.
+
 ### 2026-05-08 (later) — v1.1a started
 Picked up the v1.1 work the v1 retrospective ranked #1: replace the
 slug-heuristic categorization with Polymarket's own tags from Gamma's
