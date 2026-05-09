@@ -5,6 +5,15 @@ resolve 70% of the time? And does the answer change as you move from
 the moment of resolution back to a week before? This writeup is the v1
 analysis: a clean dataset, the math, and the headline finding.
 
+> **v1.1 update (2026-05-08).** Categorization swapped from a slug-prefix
+> heuristic to Polymarket's own `tags` taxonomy via the Gamma `/events/{id}`
+> endpoint. The "other" bucket shrank dramatically (T-7d: 370 → 83
+> markets; T-24h: 678 → 92), with most reclassified into politics,
+> geopolitics, and crypto. Headline numbers are essentially unchanged —
+> sports T-7d Brier moved 0.238 → 0.236, politics 0.116 → 0.106. The
+> caveat about coarse categorization is gone; the per-category tables
+> below now use the tag-based numbers.
+
 ## TL;DR
 
 For 4,522 standalone binary Polymarket markets above $1M in volume that
@@ -17,10 +26,10 @@ resolved between January 2024 and May 2026:
 - At **24 hours and 7 days before resolution**, real predictive
   uncertainty appears (Brier 0.163 and 0.185).
 - The headline split is by category. **At T-7d, sports markets are
-  almost uncalibrated** — Brier 0.238, barely better than the
+  almost uncalibrated** — Brier 0.236, barely better than the
   chance-baseline of 0.25. By contrast, **political and geopolitical
-  markets carry meaningful predictive signal a week out** (Brier 0.116
-  and 0.129 respectively).
+  markets carry meaningful predictive signal a week out** (Brier 0.106
+  and 0.140 respectively).
 
 Polymarket prices a Lakers game seven days out about as well as a coin
 flip. It prices a presidential election seven days out much better than
@@ -55,10 +64,10 @@ the bottom.
   modeled as `negRisk` sub-markets on Polymarket (e.g., the
   individual-candidate components of "who will win the 2024 election")
   are excluded from v1; they'll join the dataset in a later phase.
-- **Mix:** sports is the majority by count — 54.5% of all markets above
-  the $1M floor. Crypto and "other" are 16% each, geopolitics 9%,
-  politics 4%, entertainment <1%. The sports concentration matters for
-  reading the overall numbers below.
+- **Mix:** sports is the majority by count — 62.1% of all markets above
+  the $1M floor. Crypto is 18.8%, geopolitics 10.4%, politics 6.2%,
+  "other" 2.0%, entertainment 0.5%. The sports concentration matters
+  for reading the overall numbers below.
 - **Resolution window:** 2024-01-10 → 2026-05-07. About 16 months of
   resolved markets.
 
@@ -141,20 +150,26 @@ resolve YES — but the buckets in the middle are far from the diagonal.
 
 | Category | n | Brier | Log loss |
 |---|---|---|---|
-| **sports** | **1,425** | **0.238** | 0.668 |
-| crypto | 620 | 0.144 | 0.434 |
-| other | 370 | 0.132 | 0.411 |
-| geopolitics | 317 | 0.129 | 0.387 |
-| politics | 156 | 0.116 | 0.347 |
-| entertainment | 17 | 0.077 | 0.231 |
+| **sports** | **1,475** | **0.236** | 0.663 |
+| entertainment | 20 | 0.154 | 0.477 |
+| crypto | 699 | 0.141 | 0.422 |
+| geopolitics | 385 | 0.140 | 0.422 |
+| politics | 243 | 0.106 | 0.338 |
+| other | 83 | 0.107 | 0.327 |
 
-(Categories assigned via slug-prefix heuristic; see caveats below.)
+(Categories assigned via Polymarket's own `tags` taxonomy from the Gamma
+`/events/{id}` endpoint, with a slug-prefix fallback for the rare
+markets whose tags don't intersect any of the six buckets.)
 
-Sports is *the* story. At Brier 0.238 it sits a hair below the
+Sports is *the* story. At Brier 0.236 it sits a hair below the
 chance-baseline of 0.25 — meaning a week before tipoff or first pitch,
 Polymarket prices on individual game outcomes are barely better than
 flipping a coin. The other categories are meaningfully better: politics
-at 0.116 and geopolitics at 0.129 carry real signal seven days out.
+at 0.106 and geopolitics at 0.140 carry real signal seven days out.
+
+(Entertainment at 0.154 looks worse than crypto/geopolitics, but with
+only 20 markets in the cohort the bootstrap interval is wide — read
+that row as "we don't have a clean answer here yet.")
 
 This makes intuitive sense. A week before an NBA game, the outcome
 depends on player health, opponent matchups, and shooting variance — most
@@ -165,17 +180,17 @@ a ceasefire, more of the relevant information is structural and stable.
 
 | Category | n | Brier | Log loss |
 |---|---|---|---|
-| **sports** | **2,388** | **0.225** | 0.640 |
-| other | 678 | 0.118 | 0.349 |
-| crypto | 735 | 0.090 | 0.269 |
-| geopolitics | 390 | 0.067 | 0.197 |
-| politics | 185 | 0.036 | 0.108 |
-| entertainment | 17 | 0.033 | 0.089 |
+| **sports** | **2,683** | **0.224** | 0.637 |
+| crypto | 848 | 0.085 | 0.259 |
+| geopolitics | 467 | 0.064 | 0.188 |
+| politics | 280 | 0.037 | 0.118 |
+| other | 92 | 0.035 | 0.119 |
+| entertainment | 23 | 0.024 | 0.063 |
 
-Sports is still the laggard at 24h out (Brier 0.225 — even the day
-before the game is barely better than chance), while everything else has
-tightened up considerably. Politics in particular drops to 0.036 a day
-out — extremely well calibrated.
+Sports is still the laggard at 24h out (Brier 0.224 — even the day
+before the game is barely better than chance), while everything else
+has tightened up considerably. Politics drops to 0.037 a day out —
+extremely well calibrated.
 
 ### Volume doesn't rescue the 7-day picture
 
@@ -201,12 +216,13 @@ A few things to keep in mind before extrapolating from this:
 - **Volume floor bias.** $1M+ heavily weights the sample toward
   elections, geopolitics, crypto, and major US sports. The long tail of
   $1k-$1M markets is excluded for a tractable v1.
-- **Coarse categorization.** Categories are assigned by a slug-prefix
-  heuristic, not Polymarket's own tags. About 16% of markets fall into
-  "other", and there's almost certainly some leakage between the named
-  categories (e.g. an Iran-sanctions market matching the politics regex
-  before geopolitics). v2 will swap this for proper category tags from
-  Gamma's `events` field.
+- **Categorization** uses Polymarket's own `tags` taxonomy via Gamma's
+  `/events/{id}` endpoint (v1.1 swap from a slug heuristic). Each market's
+  category is the first of {sports, entertainment, crypto, geopolitics,
+  politics, other} whose tag set intersects the market's tags; markets
+  whose tags only match meta-slugs (`recurring`, `hit-price`, etc.) fall
+  back to the slug heuristic. The "other" cohort is small (~83 at T-7d,
+  ~92 at T-24h) and consists mostly of niche or experimental markets.
 - **Multi-outcome events excluded.** The most famous Polymarket market
   of all — the 2024 US Presidential Election ($1.5B in volume) — is
   *not* in this dataset because it's structured as a `negRisk`
@@ -265,9 +281,6 @@ contradictory.
   category coverage substantially, especially in entertainment, niche
   politics, and longer-tail topics. Requires chunking discovery by
   end-date windows to fit under Gamma's pagination cap.
-- **Real categories.** Replace the slug-heuristic categorizer with
-  Polymarket's own tags from Gamma's `events` field. Same math layer,
-  better breakdowns.
 - **Cross-platform comparison.** Add Kalshi as a second data source.
   Different resolution mechanism, different audience, different
   categorical mix.
@@ -293,7 +306,7 @@ python -m calibration.cli analyze                          # ~30 s
 
 Outputs land in `data/markets.db` (SQLite) and `reports/`. The math is
 in `src/calibration/analysis/{metrics,calibration,snapshots}.py` and
-covered by 61 unit tests.
+covered by 84 unit tests.
 
 Stack: Python 3.11+, httpx, pandas, numpy, matplotlib, sqlite3, pydantic,
 pytest, ruff. No other dependencies.

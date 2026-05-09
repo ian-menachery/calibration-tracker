@@ -8,7 +8,9 @@ from calibration.analysis.calibration import (
     bucket,
     bucket_5pct,
     bucket_decile,
+    categorize_market,
     categorize_slug,
+    categorize_tags,
     compute_metrics,
     load_calibration_frame,
 )
@@ -16,6 +18,7 @@ from calibration.storage.repository import (
     Market,
     Snapshot,
     init_db,
+    insert_market_tags,
     upsert_markets,
     upsert_snapshots,
 )
@@ -42,6 +45,42 @@ from calibration.storage.repository import (
 ])
 def test_categorize_slug(slug, expected):
     assert categorize_slug(slug) == expected
+
+
+# ---------- categorize_tags + categorize_market (v1.1) ----------
+
+@pytest.mark.parametrize("tags,expected", [
+    (["nba", "basketball"], "sports"),
+    (["games", "sports"], "sports"),
+    (["league-of-legends", "esports"], "sports"),
+    (["bitcoin", "crypto-prices"], "crypto"),
+    (["ethereum"], "crypto"),
+    (["iran", "trump"], "geopolitics"),  # geopolitics order > politics
+    (["middle-east", "israel"], "geopolitics"),
+    (["politics", "trump"], "politics"),  # no geo tag, so politics wins
+    (["congress", "gov-shutdown"], "politics"),
+    (["celebrities"], "entertainment"),
+    (["oscars"], "entertainment"),
+    (["recurring", "hit-price"], None),   # only meta-tags -> no match
+    ([], None),
+    (["totally-unknown-tag"], None),
+])
+def test_categorize_tags(tags, expected):
+    assert categorize_tags(tags) == expected
+
+
+def test_categorize_market_uses_tags_first():
+    # Slug suggests sports (nba), tags say crypto -> tags win.
+    assert categorize_market("nba-bos-phi-2026-04-24", ["bitcoin"]) == "crypto"
+
+
+def test_categorize_market_falls_back_to_slug_when_tags_dont_match():
+    # Tags are only meta -> fall through to slug heuristic.
+    assert categorize_market("nba-bos-phi-2026-04-24", ["recurring"]) == "sports"
+
+
+def test_categorize_market_falls_back_to_slug_when_no_tags():
+    assert categorize_market("will-trump-win-iowa", []) == "politics"
 
 
 # ---------- bucket() ----------
@@ -132,6 +171,8 @@ def test_load_calibration_frame_roundtrip():
             gamma_event_id="evt",
         )
         upsert_markets(conn, [m])
+        # Tag-based path: market has explicit "nba" tag -> sports.
+        insert_market_tags(conn, [("0xa", "nba"), ("0xa", "basketball")])
         upsert_snapshots(conn, [
             Snapshot(market_id="0xa", snapshot_type="1h", price=0.88,
                      observed_at=datetime(2026, 4, 25, 1, tzinfo=timezone.utc)),
@@ -141,6 +182,36 @@ def test_load_calibration_frame_roundtrip():
         assert df.loc[0, "predicted"] == 0.88
         assert df.loc[0, "outcome"] == 1.0
         assert df.loc[0, "category"] == "sports"
+    finally:
+        conn.close()
+
+
+def test_load_calibration_frame_falls_back_to_slug_when_no_tags():
+    conn = init_db(":memory:")
+    try:
+        m = Market(
+            market_id="0xa",
+            slug="nba-bos-phi-2026-04-24",
+            question="?",
+            category=None,
+            market_type="binary",
+            parent_event_id=None,
+            end_date=datetime(2026, 4, 25, tzinfo=timezone.utc),
+            resolved_outcome="YES",
+            resolved_value=1.0,
+            total_volume_usd=5_000_000.0,
+            fetched_at=datetime(2026, 5, 8, tzinfo=timezone.utc),
+            yes_token_id="tok",
+            gamma_event_id="evt",
+        )
+        upsert_markets(conn, [m])
+        # No market_tags rows for 0xa -> categorize_market falls back to slug heuristic.
+        upsert_snapshots(conn, [
+            Snapshot(market_id="0xa", snapshot_type="1h", price=0.5,
+                     observed_at=datetime(2026, 4, 25, 1, tzinfo=timezone.utc)),
+        ])
+        df = load_calibration_frame(conn, "1h")
+        assert df.loc[0, "category"] == "sports"  # via slug heuristic on "nba-..."
     finally:
         conn.close()
 

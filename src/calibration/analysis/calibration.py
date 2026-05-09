@@ -15,7 +15,69 @@ import numpy as np
 import pandas as pd
 
 from calibration.analysis.metrics import bootstrap_ci, brier_score, log_loss
-from calibration.storage.repository import select_snapshot_join
+from calibration.storage.repository import get_tags_for_markets, select_snapshot_join
+
+# Tag-based categorizer (v1.1). Iterate this list in order; first bucket
+# whose tag-slug set intersects the market's tags wins. Order matters —
+# geopolitics is checked before politics so a market tagged both "iran"
+# and "trump" lands in geopolitics. Sports comes first because most game
+# markets have generic "politics"/"world"/"trump" tags too via meta-events,
+# but a sport-specific tag (nba/nfl/etc) reliably means sports. Long tail
+# falls through to slug-heuristic fallback.
+_CATEGORY_MAPPING: list[tuple[str, frozenset[str]]] = [
+    ("sports", frozenset({
+        "sports", "games", "nba", "basketball", "nfl", "football", "nhl",
+        "hockey", "mlb", "baseball", "soccer", "tennis", "golf", "ufc",
+        "boxing", "f1", "formula-1", "esports", "league-of-legends",
+        "counter-strike", "dota", "valorant", "olympics", "world-cup",
+        "champions-league", "premier-league", "epl", "la-liga",
+        "wimbledon", "us-open", "atp", "wta", "cricket", "ipl", "fifa",
+    })),
+    ("crypto", frozenset({
+        "crypto", "crypto-prices", "bitcoin", "ethereum", "solana",
+        "cardano", "xrp", "doge", "memecoin", "stablecoin", "defi",
+        "altcoin", "btc", "eth", "sol", "ada",
+    })),
+    ("geopolitics", frozenset({
+        "geopolitics", "iran", "israel", "middle-east", "russia",
+        "ukraine", "putin", "zelenskyy", "china", "nato", "north-korea",
+        "korea", "taiwan", "saudi-arabia", "venezuela", "war", "invasion",
+        "ceasefire", "diplomacy-ceasefire", "military-strikes", "nuclear",
+        "hostage", "hamas", "hezbollah", "netanyahu", "khamenei",
+    })),
+    ("politics", frozenset({
+        "politics", "trump", "biden", "harris", "kamala", "desantis",
+        "election", "elections", "us-election", "2024-election",
+        "presidential-election", "primary", "gop", "democrats",
+        "democratic", "republican", "republicans", "congress", "senate",
+        "house-of-representatives", "supreme-court", "scotus", "scotus-2024",
+        "newsom", "sanders", "pelosi", "vance", "vp", "cabinet",
+        "gov-shutdown", "impeachment",
+    })),
+    ("entertainment", frozenset({
+        "entertainment", "celebrities", "movies", "music", "oscars",
+        "grammys", "emmys", "netflix", "disney", "spotify", "tiktok",
+        "taylor-swift", "drake", "kanye", "kardashian", "youtube",
+        "streaming", "box-office", "met-gala", "cannes", "halftime",
+    })),
+]
+
+
+def categorize_tags(tags: list[str]) -> str | None:
+    """Map a list of Polymarket tag slugs to one of our 6 buckets.
+
+    Returns None if no tag matches any bucket — caller should fall through
+    to the slug heuristic for those markets.
+    """
+    tag_set = set(tags)
+    for category, slugs in _CATEGORY_MAPPING:
+        if tag_set & slugs:
+            return category
+    return None
+
+
+# --- legacy slug heuristic (v1) — kept as fallback for markets whose tags
+# don't intersect any _CATEGORY_MAPPING bucket ---
 
 # Slug-prefix heuristic. Order matters — first match wins, so geopolitics
 # beats politics for the iran/ukraine cases that mention people's names.
@@ -67,16 +129,37 @@ def categorize_slug(slug: str | None) -> str:
     return "other"
 
 
+def categorize_market(slug: str | None, tags: list[str]) -> str:
+    """v1.1 categorizer: try Gamma tags first, fall back to slug heuristic."""
+    if tags:
+        cat = categorize_tags(tags)
+        if cat is not None:
+            return cat
+    return categorize_slug(slug)
+
+
 def load_calibration_frame(
     conn: sqlite3.Connection, snapshot_type: str
 ) -> pd.DataFrame:
-    """Pull markets x price_snapshots into a DataFrame for analysis."""
+    """Pull markets x price_snapshots into a DataFrame for analysis.
+
+    Categorization (v1.1): each market's category is derived from its
+    Gamma tags via `_CATEGORY_MAPPING`; if none of the market's tags
+    match a known bucket, falls back to the v1 slug heuristic.
+    """
     rows = select_snapshot_join(conn, snapshot_type)
     df = pd.DataFrame(
         rows,
         columns=["market_id", "slug", "predicted", "outcome", "volume", "end_date"],
     )
-    df["category"] = df["slug"].apply(categorize_slug)
+    if df.empty:
+        df["category"] = pd.Series(dtype=str)
+        return df
+    tags_by_market = get_tags_for_markets(conn, df["market_id"].tolist())
+    df["category"] = df.apply(
+        lambda row: categorize_market(row["slug"], tags_by_market.get(row["market_id"], [])),
+        axis=1,
+    )
     return df
 
 

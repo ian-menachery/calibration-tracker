@@ -21,12 +21,12 @@ The story is in the T-7d by-category breakdown:
 
 | Category | n | Brier (T-7d) |
 |---|---|---|
-| **sports** | **1,425** | **0.238** |
-| crypto | 620 | 0.144 |
-| other | 370 | 0.132 |
-| geopolitics | 317 | 0.129 |
-| politics | 156 | 0.116 |
-| entertainment | 17 | 0.077 |
+| **sports** | **1,475** | **0.236** |
+| entertainment | 20 | 0.154 |
+| crypto | 699 | 0.141 |
+| geopolitics | 385 | 0.140 |
+| politics | 243 | 0.106 |
+| other | 83 | 0.107 |
 
 A week before tipoff, Polymarket sports markets are barely better than coin flips. A week before an election, they carry real predictive signal.
 
@@ -58,7 +58,7 @@ src/calibration/
   analysis/       # snapshot extraction (Stage 3) + bucketing/metrics (Stage 4)
   reporting/      # matplotlib calibration charts
   cli.py          # argparse entry point — one subcommand per stage
-tests/            # 61 unit tests covering math + storage
+tests/            # 84 unit tests covering math + storage
 reports/          # writeup + figures
 ```
 

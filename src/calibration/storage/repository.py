@@ -195,6 +195,26 @@ def get_tags_for_market(conn: sqlite3.Connection, market_id: str) -> list[str]:
     return [r[0] for r in rows]
 
 
+def get_tags_for_markets(
+    conn: sqlite3.Connection, market_ids: list[str]
+) -> dict[str, list[str]]:
+    """Bulk lookup: returns {market_id: [tag_slug, ...]} for the given ids.
+
+    Used by Stage 4's load_calibration_frame to avoid N round-trips.
+    """
+    if not market_ids:
+        return {}
+    placeholders = ",".join("?" * len(market_ids))
+    rows = conn.execute(
+        f"SELECT market_id, tag_slug FROM market_tags WHERE market_id IN ({placeholders}) ORDER BY market_id, tag_slug",
+        market_ids,
+    ).fetchall()
+    out: dict[str, list[str]] = {}
+    for mid, slug in rows:
+        out.setdefault(mid, []).append(slug)
+    return out
+
+
 def markets_missing_tags(conn: sqlite3.Connection) -> list[tuple[str, str]]:
     """Markets with a known gamma_event_id but no rows in market_tags.
 
