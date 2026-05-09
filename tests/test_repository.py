@@ -6,10 +6,13 @@ from calibration.storage.repository import (
     Market,
     PriceTick,
     Snapshot,
+    TrainingFeatures,
     count_markets,
+    count_training_features,
     get_market,
     get_tags_for_market,
     get_ticks_for_market,
+    get_training_features,
     init_db,
     insert_market_tags,
     insert_price_ticks,
@@ -17,6 +20,7 @@ from calibration.storage.repository import (
     markets_missing_tags,
     upsert_markets,
     upsert_snapshots,
+    upsert_training_features,
 )
 
 
@@ -205,3 +209,85 @@ def test_markets_missing_tags_excludes_already_tagged_markets(conn):
     insert_market_tags(conn, [("0xa", "sports")])
     pairs = markets_missing_tags(conn)
     assert pairs == [("0xb", "evt-2")]
+
+
+# ---------- training_features (v2.0a) ----------
+
+def _features(market_id: str = "0xa", **overrides) -> TrainingFeatures:
+    base = dict(
+        market_id=market_id,
+        snapshot_type="7d",
+        target=0.09,
+        category="sports",
+        tag_count=3,
+        log_total_volume_usd=14.5,
+        market_age_days_at_t7d=120.0,
+        total_market_lifespan_days=127.0,
+        price_t7d=0.7,
+        price_t7d_dist_to_half=0.2,
+        price_t7d_above_half=1,
+        price_t14d=0.6,
+        drift_t14d_to_t7d=0.1,
+        realized_vol_t14d_to_t7d=0.05,
+        max_abs_move_t14d_to_t7d=0.08,
+        sign_flip_count_t14d_to_t7d=0,
+        end_date_dow=2,
+        end_date_month=11,
+        end_date_year=2024,
+        built_at=datetime(2026, 5, 8, tzinfo=timezone.utc),
+    )
+    base.update(overrides)
+    return TrainingFeatures(**base)
+
+
+def test_training_features_empty_db(conn):
+    assert count_training_features(conn) == 0
+    assert get_training_features(conn) == []
+
+
+def test_training_features_roundtrip(conn):
+    upsert_markets(conn, [_market("0xa")])
+    f = _features("0xa")
+    upsert_training_features(conn, [f])
+    got = get_training_features(conn)
+    assert got == [f]
+
+
+def test_training_features_idempotent_overwrites_on_market_id(conn):
+    upsert_markets(conn, [_market("0xa")])
+    upsert_training_features(conn, [_features("0xa", target=0.05)])
+    upsert_training_features(conn, [_features("0xa", target=0.10)])
+    assert count_training_features(conn) == 1
+    got = get_training_features(conn)
+    assert got[0].target == 0.10
+
+
+def test_training_features_returns_sorted_by_market_id(conn):
+    upsert_markets(conn, [_market("0xa"), _market("0xb"), _market("0xc")])
+    upsert_training_features(conn, [_features("0xc"), _features("0xa"), _features("0xb")])
+    got = get_training_features(conn)
+    assert [f.market_id for f in got] == ["0xa", "0xb", "0xc"]
+
+
+def test_training_features_handles_null_optional_fields(conn):
+    """All Optional[...] fields should roundtrip None correctly (SQLite NULL)."""
+    upsert_markets(conn, [_market("0xa")])
+    f = _features(
+        "0xa",
+        category=None,
+        tag_count=None,
+        log_total_volume_usd=None,
+        market_age_days_at_t7d=None,
+        total_market_lifespan_days=None,
+        price_t14d=None,
+        drift_t14d_to_t7d=None,
+        realized_vol_t14d_to_t7d=None,
+        max_abs_move_t14d_to_t7d=None,
+        sign_flip_count_t14d_to_t7d=None,
+        end_date_dow=None,
+        end_date_month=None,
+        end_date_year=None,
+    )
+    upsert_training_features(conn, [f])
+    got = get_training_features(conn)
+    assert got == [f]
