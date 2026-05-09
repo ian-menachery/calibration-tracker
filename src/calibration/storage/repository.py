@@ -47,38 +47,6 @@ class Snapshot:
     observed_at: datetime
 
 
-@dataclass(frozen=True)
-class TrainingFeatures:
-    """v2.0 row in `training_features` — features observable at the snapshot
-    horizon (T-7d) plus the per-market regression target `(p − y)²`.
-
-    Optional fields are None for markets where the value can't be computed
-    (e.g. raw_price_history doesn't reach back to T-14d). The compute layer
-    converts NaN → None at the storage boundary so SQLite stores NULL.
-    """
-
-    market_id: str
-    snapshot_type: str
-    target: float
-    category: str | None
-    tag_count: int | None
-    log_total_volume_usd: float | None
-    market_age_days_at_t7d: float | None
-    total_market_lifespan_days: float | None
-    price_t7d: float
-    price_t7d_dist_to_half: float
-    price_t7d_above_half: int
-    price_t14d: float | None
-    drift_t14d_to_t7d: float | None
-    realized_vol_t14d_to_t7d: float | None
-    max_abs_move_t14d_to_t7d: float | None
-    sign_flip_count_t14d_to_t7d: int | None
-    end_date_dow: int | None
-    end_date_month: int | None
-    end_date_year: int | None
-    built_at: datetime
-
-
 def init_db(path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.execute("PRAGMA foreign_keys = ON")
@@ -262,86 +230,6 @@ def markets_missing_tags(conn: sqlite3.Connection) -> list[tuple[str, str]]:
         """
     ).fetchall()
     return [(r[0], r[1]) for r in rows]
-
-
-def markets_with_snapshot(
-    conn: sqlite3.Connection, snapshot_type: str
-) -> list[str]:
-    """Market IDs that have a price_snapshots row of the given type.
-    Drives v2.0's build-features cohort."""
-    rows = conn.execute(
-        "SELECT DISTINCT market_id FROM price_snapshots WHERE snapshot_type = ? ORDER BY market_id",
-        (snapshot_type,),
-    ).fetchall()
-    return [r[0] for r in rows]
-
-
-def get_snapshot(
-    conn: sqlite3.Connection, market_id: str, snapshot_type: str
-) -> Snapshot | None:
-    row = conn.execute(
-        "SELECT market_id, snapshot_type, price, observed_at "
-        "FROM price_snapshots WHERE market_id = ? AND snapshot_type = ?",
-        (market_id, snapshot_type),
-    ).fetchone()
-    if row is None:
-        return None
-    return Snapshot(
-        market_id=row[0],
-        snapshot_type=row[1],
-        price=row[2],
-        observed_at=datetime.fromisoformat(row[3]),
-    )
-
-
-def upsert_training_features(
-    conn: sqlite3.Connection, rows: Iterable[TrainingFeatures]
-) -> int:
-    materialized = [
-        (
-            r.market_id, r.snapshot_type, r.target, r.category, r.tag_count,
-            r.log_total_volume_usd, r.market_age_days_at_t7d,
-            r.total_market_lifespan_days, r.price_t7d, r.price_t7d_dist_to_half,
-            r.price_t7d_above_half, r.price_t14d, r.drift_t14d_to_t7d,
-            r.realized_vol_t14d_to_t7d, r.max_abs_move_t14d_to_t7d,
-            r.sign_flip_count_t14d_to_t7d, r.end_date_dow, r.end_date_month,
-            r.end_date_year, r.built_at.isoformat(),
-        )
-        for r in rows
-    ]
-    conn.executemany(
-        """
-        INSERT OR REPLACE INTO training_features (
-            market_id, snapshot_type, target, category, tag_count,
-            log_total_volume_usd, market_age_days_at_t7d,
-            total_market_lifespan_days, price_t7d, price_t7d_dist_to_half,
-            price_t7d_above_half, price_t14d, drift_t14d_to_t7d,
-            realized_vol_t14d_to_t7d, max_abs_move_t14d_to_t7d,
-            sign_flip_count_t14d_to_t7d, end_date_dow, end_date_month,
-            end_date_year, built_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        materialized,
-    )
-    conn.commit()
-    return len(materialized)
-
-
-def count_training_features(conn: sqlite3.Connection) -> int:
-    return conn.execute("SELECT COUNT(*) FROM training_features").fetchone()[0]
-
-
-def get_training_features(conn: sqlite3.Connection) -> list[TrainingFeatures]:
-    cols = [f.name for f in fields(TrainingFeatures)]
-    rows = conn.execute(
-        f"SELECT {', '.join(cols)} FROM training_features ORDER BY market_id"
-    ).fetchall()
-    out: list[TrainingFeatures] = []
-    for row in rows:
-        data = dict(zip(cols, row))
-        data["built_at"] = datetime.fromisoformat(data["built_at"])
-        out.append(TrainingFeatures(**data))
-    return out
 
 
 def select_snapshot_join(

@@ -23,33 +23,6 @@ CREATE TABLE IF NOT EXISTS market_tags (
     FOREIGN KEY (market_id) REFERENCES markets(market_id)
 );
 
--- v2.0: pre-computed feature table for the v2 modeling pipeline.
--- One row per (market, snapshot_type='7d') pair. Re-runnable via
--- INSERT OR REPLACE on the market_id PK. See ARCHITECTURE.md / v2 plan.
-CREATE TABLE IF NOT EXISTS training_features (
-    market_id                       TEXT PRIMARY KEY,
-    snapshot_type                   TEXT NOT NULL,
-    target                          REAL NOT NULL,
-    category                        TEXT,
-    tag_count                       INTEGER,
-    log_total_volume_usd            REAL,
-    market_age_days_at_t7d          REAL,
-    total_market_lifespan_days      REAL,
-    price_t7d                       REAL NOT NULL,
-    price_t7d_dist_to_half          REAL NOT NULL,
-    price_t7d_above_half            INTEGER NOT NULL,
-    price_t14d                      REAL,
-    drift_t14d_to_t7d               REAL,
-    realized_vol_t14d_to_t7d        REAL,
-    max_abs_move_t14d_to_t7d        REAL,
-    sign_flip_count_t14d_to_t7d     INTEGER,
-    end_date_dow                    INTEGER,
-    end_date_month                  INTEGER,
-    end_date_year                   INTEGER,
-    built_at                        TEXT NOT NULL,
-    FOREIGN KEY (market_id) REFERENCES markets(market_id)
-);
-
 CREATE TABLE IF NOT EXISTS raw_price_history (
     market_id  TEXT NOT NULL,
     timestamp  TEXT NOT NULL,          -- ISO 8601 UTC

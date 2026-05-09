@@ -3,6 +3,53 @@
 Per-session handoff: what got done, where things stand, what to pick up next.
 For the running list of API gotchas and v2 considerations, see `NOTES.md`.
 
+## 2026-05-09 — v1.1 freeze (project wrapped at intentional end state)
+
+### Summary
+After briefly starting v2 work (a model to predict per-market T-7d
+miscalibration), reverted course and froze the project at v1.1. The four
+v2 commits — `f9f27bd` v2-prep, `d2303a1` v2.0a, `fff19fa` v2.0b,
+`aaac4b6` v2.0c — were rolled back via surgical removal of the
+`training_features` table, the `src/calibration/modeling/` module, the
+`build-features` CLI subcommand, the modeling deps (sklearn, lightgbm,
+scipy, joblib, threadpoolctl), and the corresponding tests. v1 + v1.1
+code in `src/calibration/` was not touched. Repo now has a `ROADMAP.md`
+documenting deferred future work (Phase 6, v2 modeling, Kalshi) and a
+v1.1 git tag marking the release.
+
+### Current state
+**Complete:**
+- v1 + v1.1 publicly shipped at github.com/ian-menachery/calibration-tracker.
+- 84/84 tests pass (back to the v1.1 baseline); ruff clean.
+- `ROADMAP.md` lists deferred future work; `README.md` polished with
+  Findings, How-to-reproduce, and Repo-structure sections.
+- `v1.1` tag pushed.
+
+**In-progress:** none. The project is intentionally finished.
+
+### Worth flagging
+- `data/markets.db` (gitignored) still has the `training_features` table
+  populated locally from v2.0c's run. Harmless — `init_db` no longer
+  recreates it but doesn't drop it either. Nuke the file if you want a
+  perfectly clean re-run.
+- Git history preserves all v2 work — anyone reviving the model line
+  later can `git show aaac4b6 -- src/calibration/modeling/features.py`
+  to recover the feature-engineering math.
+
+### What v2 was, briefly
+Goal was to train a model predicting `(p_T7d − resolved_value)²` from
+features observable at T-7d (category, volume, market age, price
+trajectory across T-14d → T-7d), with a closing honest-backtest section
+demonstrating that fees and spreads kill any apparent edge. Got as far
+as feature-table construction (~2,905 rows, target avg matched v1.1's
+T-7d Brier exactly); modeling itself never started.
+
+### Useful commands
+```
+.venv\Scripts\python.exe -m pytest tests/ -q                                   # 84/84
+.venv\Scripts\python.exe -m calibration.cli analyze --db data/markets.db       # rerun stage 4
+```
+
 ## 2026-05-08 — v1.1 done (tag-based categorization shipped)
 
 ### Summary

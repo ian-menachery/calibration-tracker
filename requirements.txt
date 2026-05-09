@@ -10,9 +10,7 @@ httpcore==1.0.9
 httpx==0.28.1
 idna==3.13
 iniconfig==2.3.0
-joblib==1.5.3
 kiwisolver==1.5.0
-lightgbm==4.6.0
 matplotlib==3.10.9
 numpy==2.4.4
 packaging==26.2
@@ -26,10 +24,7 @@ pyparsing==3.3.2
 pytest==9.0.3
 python-dateutil==2.9.0.post0
 ruff==0.15.12
-scikit-learn==1.8.0
-scipy==1.17.1
 six==1.17.0
-threadpoolctl==3.6.0
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 tzdata==2026.2
