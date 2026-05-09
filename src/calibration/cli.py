@@ -20,13 +20,16 @@ from calibration.analysis.snapshots import extract_snapshots
 from calibration.polymarket.client import GammaClient
 from calibration.polymarket.discovery import discover_markets
 from calibration.polymarket.prices import CLOBClient, fetch_market_history
+from calibration.polymarket.tags import fetch_event_tags
 from calibration.reporting.charts import plot_calibration_curve
 from calibration.storage.repository import (
     get_market,
     get_ticks_for_market,
     init_db,
+    insert_market_tags,
     insert_price_ticks,
     markets_missing_history,
+    markets_missing_tags,
     markets_with_history,
     upsert_markets,
     upsert_snapshots,
@@ -111,6 +114,33 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_fetch_tags(args: argparse.Namespace) -> int:
+    db_path = Path(args.db)
+    conn = init_db(db_path)
+    try:
+        pairs = markets_missing_tags(conn)
+        if args.limit is not None:
+            pairs = pairs[: args.limit]
+
+        print(f"Fetching tags for {len(pairs)} markets ...")
+        fetched = 0
+        skipped = 0
+        with GammaClient() as client:
+            for i, (mid, evt_id) in enumerate(pairs, 1):
+                tags = fetch_event_tags(client, evt_id)
+                if not tags:
+                    skipped += 1
+                else:
+                    insert_market_tags(conn, [(mid, t) for t in tags])
+                    fetched += 1
+                if i % 50 == 0:
+                    print(f"  [{i}/{len(pairs)}] {fetched} fetched, {skipped} skipped")
+        print(f"Done. Fetched tags for {fetched} markets, skipped {skipped} (HTTP error or no tags).")
+    finally:
+        conn.close()
+    return 0
+
+
 def cmd_extract_snapshots(args: argparse.Namespace) -> int:
     db_path = Path(args.db)
     conn = init_db(db_path)
@@ -183,6 +213,11 @@ def main(argv: list[str] | None = None) -> int:
     p_fetch.add_argument("--limit", type=int, default=None, help="cap markets per run")
     p_fetch.add_argument("--all", action="store_true", help="re-fetch even markets that already have ticks")
     p_fetch.set_defaults(func=cmd_fetch_prices)
+
+    p_tags = sub.add_parser("fetch-tags", help="v1.1: fetch category tags per market via Gamma /events/{id}")
+    p_tags.add_argument("--db", default="data/markets.db")
+    p_tags.add_argument("--limit", type=int, default=None, help="cap markets per run")
+    p_tags.set_defaults(func=cmd_fetch_tags)
 
     p_snap = sub.add_parser("extract-snapshots", help="Stage 3: extract calibration snapshots into price_snapshots")
     p_snap.add_argument("--db", default="data/markets.db")
