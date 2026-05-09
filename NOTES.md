@@ -79,6 +79,27 @@ yields ~5k fetched / ~1.5–2.5k binary kept after filter), update CLI default a
 probably ARCHITECTURE.md sec 12.1, then re-run and commit 2c.
 Volume floor chosen: $1M, with category-bias caveat to be acknowledged in writeup.
 
+### 2026-05-08 (later) — v1.1a started
+Picked up the v1.1 work the v1 retrospective ranked #1: replace the
+slug-heuristic categorization with Polymarket's own tags from Gamma's
+`events` field. Shape probe mid-plan revealed tags don't ship inline
+with `/markets` — they only appear when you fetch `/events/{event_id}`
+separately. Plan revised to add a new resumable `fetch-tags` stage
+between discover and fetch-prices, mirroring the fetch-prices pattern.
+Cleanup pass first: removed `KEEP_KILL.md` (Phase 0 audit artifact;
+git history preserves it) and the four `_view_*_temp.py` scratch
+viewers. **v1.1a landed:** storage foundation only — new
+`market_tags(market_id, tag_slug)` side-table + `markets.gamma_event_id`
+column, both migrated via the same PRAGMA-table_info + ALTER TABLE
+pattern as 3a-fix's `yes_token_id`; Market dataclass extended;
+`markets_missing_tags` helper returning `(market_id, gamma_event_id)`
+pairs (drives v1.1b's resumability); minimal `events` field added to
+GammaMarket so `_to_market` can capture `events[0].id`. 5 new tests
+covering tag roundtrip, idempotency, and the missing-tags anti-join.
+66/66 pass; ruff clean. Re-ran discover end-to-end: 4,532 markets (up
+10 from this morning) all have `gamma_event_id` populated;
+`market_tags` table exists but is empty until v1.1b runs.
+
 ### 2026-05-08
 Shipped v1 end-to-end. Phase 4 (Stage 4 calibration analysis) landed in
 three commits — 4a (`metrics.py`: brier_score, log_loss, bootstrap_ci with

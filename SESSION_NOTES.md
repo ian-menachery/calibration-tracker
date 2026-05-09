@@ -3,6 +3,59 @@
 Per-session handoff: what got done, where things stand, what to pick up next.
 For the running list of API gotchas and v2 considerations, see `NOTES.md`.
 
+## 2026-05-08 — v1.1a started (real-categories foundation)
+
+### Summary
+Picked up the v1.1 work the v1 retrospective ranked #1: replace the
+slug-heuristic categorization with Polymarket's own tags from Gamma's
+`events` field. Shape probe mid-plan revealed `/markets` doesn't carry
+tags — they only appear on `/events/{id}` — so the plan was revised to
+add a new resumable `fetch-tags` stage between discover and fetch-prices,
+mirroring the fetch-prices pattern. v1.1a landed the storage foundation
+only.
+
+### Current state
+**Complete:**
+- v1.1a: `market_tags(market_id, tag_slug)` side-table +
+  `markets.gamma_event_id` column, both migrated via PRAGMA + ALTER
+  TABLE; `Market` dataclass extended; `insert_market_tags` /
+  `get_tags_for_market` / `markets_missing_tags` helpers;
+  `_to_market` now captures `events[0].id`. 66/66 tests; ruff clean.
+- Cleanup pass: removed `KEEP_KILL.md` (Phase 0 artifact) and four
+  `_view_*_temp.py` scratch viewers.
+- 4,532 markets (10 more resolved since the morning's full discover)
+  all have `gamma_event_id` populated. `market_tags` table is empty
+  until v1.1b runs.
+
+**In-progress:** v1.1b (the new fetch-tags stage).
+
+### Worth flagging
+- v1.1 plan is in `~/.claude/plans/give-me-the-plan-cozy-snail.md`,
+  updated mid-stream after the shape probe.
+- v1.1b will run ~4,532 extra Gamma calls × 0.2 s = ~15 min of API
+  time on the full backfill.
+- v1.1c's writeup update will shift the per-category Brier numbers;
+  the qualitative finding (sports much worse than politics at T-7d)
+  is almost certainly robust.
+- One new market has no `gamma_event_id` if its `events` array is
+  empty — none observed yet but the model handles it (Market field is
+  Optional, fetch-tags skips via `markets_missing_tags`).
+
+### Next steps — v1.1b (fetch-tags stage)
+1. New `src/calibration/polymarket/tags.py` —
+   `fetch_event_tags(client, event_id) -> list[str] | None`. Hits
+   `/events/{event_id}`, parses `tags[].slug`, returns slug strings.
+   Catches `httpx.HTTPError` → None (resumable; matches prices.py).
+2. CLI `fetch-tags` subcommand with `--db --limit --all`. Default
+   mode reads `markets_missing_tags(conn)`.
+3. Smoke test on 5 markets, full backfill on ~4,532, then commit.
+
+### Useful commands
+```
+.venv\Scripts\python.exe -m pytest tests/ -q                                   # 66/66
+.venv\Scripts\python.exe -m calibration.cli discover --since 2024-01-01        # idempotent; backfills gamma_event_id
+```
+
 ## 2026-05-08 — v1 shipped (Phases 4, 5, 7 done; repo public)
 
 ### Summary
