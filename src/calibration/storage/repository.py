@@ -264,6 +264,36 @@ def markets_missing_tags(conn: sqlite3.Connection) -> list[tuple[str, str]]:
     return [(r[0], r[1]) for r in rows]
 
 
+def markets_with_snapshot(
+    conn: sqlite3.Connection, snapshot_type: str
+) -> list[str]:
+    """Market IDs that have a price_snapshots row of the given type.
+    Drives v2.0's build-features cohort."""
+    rows = conn.execute(
+        "SELECT DISTINCT market_id FROM price_snapshots WHERE snapshot_type = ? ORDER BY market_id",
+        (snapshot_type,),
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def get_snapshot(
+    conn: sqlite3.Connection, market_id: str, snapshot_type: str
+) -> Snapshot | None:
+    row = conn.execute(
+        "SELECT market_id, snapshot_type, price, observed_at "
+        "FROM price_snapshots WHERE market_id = ? AND snapshot_type = ?",
+        (market_id, snapshot_type),
+    ).fetchone()
+    if row is None:
+        return None
+    return Snapshot(
+        market_id=row[0],
+        snapshot_type=row[1],
+        price=row[2],
+        observed_at=datetime.fromisoformat(row[3]),
+    )
+
+
 def upsert_training_features(
     conn: sqlite3.Connection, rows: Iterable[TrainingFeatures]
 ) -> int:

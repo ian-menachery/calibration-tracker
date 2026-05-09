@@ -17,6 +17,7 @@ from calibration.analysis.calibration import (
     load_calibration_frame,
 )
 from calibration.analysis.snapshots import extract_snapshots
+from calibration.modeling.features import build_features_for_market
 from calibration.polymarket.client import GammaClient
 from calibration.polymarket.discovery import discover_markets
 from calibration.polymarket.prices import CLOBClient, fetch_market_history
@@ -24,6 +25,8 @@ from calibration.polymarket.tags import fetch_event_tags
 from calibration.reporting.charts import plot_calibration_curve
 from calibration.storage.repository import (
     get_market,
+    get_snapshot,
+    get_tags_for_market,
     get_ticks_for_market,
     init_db,
     insert_market_tags,
@@ -31,8 +34,10 @@ from calibration.storage.repository import (
     markets_missing_history,
     markets_missing_tags,
     markets_with_history,
+    markets_with_snapshot,
     upsert_markets,
     upsert_snapshots,
+    upsert_training_features,
 )
 
 SNAPSHOT_TYPES = ("close", "1h", "24h", "7d")
@@ -111,6 +116,43 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     if all_metrics:
         pd.concat(all_metrics, ignore_index=True).to_csv(out_dir / "calibration_metrics.csv", index=False)
     print(f"Wrote bucket-level + metrics CSVs to {out_dir}/")
+    return 0
+
+
+def cmd_build_features(args: argparse.Namespace) -> int:
+    """v2.0: build the training_features table from existing data."""
+    db_path = Path(args.db)
+    snap_type = args.snapshot
+
+    conn = init_db(db_path)
+    try:
+        market_ids = markets_with_snapshot(conn, snap_type)
+        if args.limit is not None:
+            market_ids = market_ids[: args.limit]
+
+        print(f"Building features for {len(market_ids)} markets at snapshot={snap_type} ...")
+        built_at = datetime.now(timezone.utc)
+        rows = []
+        skipped = 0
+        for i, mid in enumerate(market_ids, 1):
+            market = get_market(conn, mid)
+            if market is None or market.resolved_value is None:
+                skipped += 1
+                continue
+            snap = get_snapshot(conn, mid, snap_type)
+            if snap is None:
+                skipped += 1
+                continue
+            tags = get_tags_for_market(conn, mid)
+            ticks = get_ticks_for_market(conn, mid)
+            rows.append(build_features_for_market(market, snap, ticks, tags, built_at))
+            if i % 500 == 0:
+                print(f"  [{i}/{len(market_ids)}] computed; {skipped} skipped so far")
+
+        upsert_training_features(conn, rows)
+        print(f"Done. Built {len(rows)} feature rows; skipped {skipped}.")
+    finally:
+        conn.close()
     return 0
 
 
@@ -229,6 +271,12 @@ def main(argv: list[str] | None = None) -> int:
     p_an.add_argument("--bootstrap", type=int, default=1000, help="bootstrap iterations for per-bucket CIs")
     p_an.add_argument("--seed", type=int, default=42, help="rng seed for reproducible bootstrap CIs")
     p_an.set_defaults(func=cmd_analyze)
+
+    p_feat = sub.add_parser("build-features", help="v2.0: build training_features table for the v2 model")
+    p_feat.add_argument("--db", default="data/markets.db")
+    p_feat.add_argument("--snapshot", default="7d", help="snapshot horizon (default 7d)")
+    p_feat.add_argument("--limit", type=int, default=None, help="cap markets per run for testing")
+    p_feat.set_defaults(func=cmd_build_features)
 
     args = parser.parse_args(argv)
     return args.func(args)
