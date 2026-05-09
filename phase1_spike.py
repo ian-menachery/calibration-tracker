@@ -1,5 +1,7 @@
 """Phase 1 spike: confirm Polymarket prices-history is usable. See ARCHITECTURE.md §3.
-Throwaway — delete when Phase 1 is signed off."""
+
+Kept as a Phase 1 reference. Not used by the v1.x pipeline — the
+production CLOB client lives in src/calibration/polymarket/prices.py."""
 
 import statistics
 import time
