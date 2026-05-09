@@ -299,6 +299,7 @@ python -m venv .venv
 pip install -r requirements.txt
 
 python -m calibration.cli discover --since 2024-01-01      # ~30 s
+python -m calibration.cli fetch-tags                       # ~15 min
 python -m calibration.cli fetch-prices                     # ~30 min
 python -m calibration.cli extract-snapshots                # ~5 s
 python -m calibration.cli analyze                          # ~30 s

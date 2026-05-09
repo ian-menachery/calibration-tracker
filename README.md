@@ -1,38 +1,16 @@
 # calibration-tracker
 
-> Are Polymarket prices well calibrated? At market close: yes, perfectly. A week before resolution: depends on the category.
+A reproducible analysis of how well-calibrated Polymarket binary-market prices are, broken down by category and time-to-resolution.
 
-A reproducible calibration analysis of resolved Polymarket binary markets. Pulls market metadata and price history via Polymarket's public APIs, extracts price snapshots at four horizons before resolution (close, T-1h, T-24h, T-7d), and computes Brier score, log loss, and per-bucket realized rates with bootstrap confidence intervals.
+## Headline finding
 
-**Full writeup:** [`reports/v1_calibration.md`](reports/v1_calibration.md)
+A week before resolution, Polymarket sports markets are barely better than coin flips. They sit a hair below the 0.25 chance-baseline (Brier 0.236 across 1,475 markets), while political and geopolitical markets at the same horizon carry real predictive signal (Brier 0.106 and 0.140 respectively). The split is the load-bearing result — the platform is *not* uniformly calibrated, and the divergence is overwhelmingly explained by category, not by trading volume.
 
-## Headline result
+## Findings
 
-| Snapshot | n markets | Brier | Log loss |
-|---|---|---|---|
-| close | 4,522 | 0.0001 | 0.0009 |
-| T-1h | 4,521 | 0.0018 | 0.0066 |
-| T-24h | 4,393 | 0.163 | 0.469 |
-| T-7d | 2,905 | 0.185 | 0.535 |
+The full writeup — methodology, calibration curves at each horizon, by-category tables, by-volume tables, comparison to Polymarket's own published numbers, and caveats — lives at [`reports/v1_calibration.md`](reports/v1_calibration.md).
 
-For reference: 0 is perfect calibration, 0.25 is the always-predict-0.5 chance baseline.
-
-The story is in the T-7d by-category breakdown:
-
-| Category | n | Brier (T-7d) |
-|---|---|---|
-| **sports** | **1,475** | **0.236** |
-| entertainment | 20 | 0.154 |
-| crypto | 699 | 0.141 |
-| geopolitics | 385 | 0.140 |
-| politics | 243 | 0.106 |
-| other | 83 | 0.107 |
-
-A week before tipoff, Polymarket sports markets are barely better than coin flips. A week before an election, they carry real predictive signal.
-
-![T-7d calibration curve](reports/figures/calibration_7d.png)
-
-## Quickstart
+## How to reproduce
 
 ```bash
 git clone https://github.com/ian-menachery/calibration-tracker
@@ -42,6 +20,7 @@ python -m venv .venv
 pip install -r requirements.txt
 
 python -m calibration.cli discover --since 2024-01-01      # ~30 s
+python -m calibration.cli fetch-tags                       # ~15 min
 python -m calibration.cli fetch-prices                     # ~30 min
 python -m calibration.cli extract-snapshots                # ~5 s
 python -m calibration.cli analyze                          # ~30 s
@@ -49,24 +28,25 @@ python -m calibration.cli analyze                          # ~30 s
 
 Outputs land in `data/markets.db` (SQLite) and `reports/`.
 
-## Repo layout
+## Repo structure
 
-```
-src/calibration/
-  polymarket/     # Gamma + CLOB API clients (Stages 1, 2)
-  storage/        # SQLite schema + repository helpers
-  analysis/       # snapshot extraction (Stage 3) + bucketing/metrics (Stage 4)
-  reporting/      # matplotlib calibration charts
-  cli.py          # argparse entry point — one subcommand per stage
-tests/            # 84 unit tests covering math + storage
-reports/          # writeup + figures
-```
+The pipeline runs in five independently-runnable, idempotent stages:
 
-Design doc: [`ARCHITECTURE.md`](ARCHITECTURE.md). API gotchas, session log, and v2 considerations: [`NOTES.md`](NOTES.md).
+1. **discover** (`polymarket/discovery.py`) — pulls resolved binary markets ≥$1M volume from Polymarket's Gamma API into the `markets` table.
+2. **fetch-tags** (`polymarket/tags.py`) — pulls each market's category tags from Gamma's `/events/{id}` endpoint into `market_tags`.
+3. **fetch-prices** (`polymarket/prices.py`) — pulls full price history per market from Polymarket's CLOB API into `raw_price_history` at split fidelity (hourly across 14 days plus minute across the last 24 hours).
+4. **extract-snapshots** (`analysis/snapshots.py`) — pure pandas; locates the closest tick to (resolution − 1h / 24h / 7d) and the close, writing to `price_snapshots`.
+5. **analyze** (`analysis/calibration.py` + `metrics.py` + `reporting/charts.py`) — buckets markets by predicted price, computes per-bucket realized rate with bootstrap CIs, computes Brier and log loss overall and per category, saves PNGs and CSVs to `reports/`.
+
+Storage helpers live in `src/calibration/storage/`. CLI entry point at `src/calibration/cli.py` (one subcommand per stage). 84 unit tests in `tests/`.
+
+## Future work and roadmap
+
+[`ROADMAP.md`](ROADMAP.md) lists deferred future work (Phase 6 multi-outcome decomposition, v2 modeling, Kalshi cross-platform). The project is intentionally finished at v1.1 — see [`reports/v1_calibration.md`](reports/v1_calibration.md) for the full writeup.
 
 ## Stack
 
-Python 3.11+, [httpx](https://www.python-httpx.org/), [pandas](https://pandas.pydata.org/), [numpy](https://numpy.org/), [matplotlib](https://matplotlib.org/), [pydantic](https://docs.pydantic.dev/), [pytest](https://docs.pytest.org/), [ruff](https://docs.astral.sh/ruff/), and stdlib `sqlite3`. No other dependencies.
+Python 3.11+, [httpx](https://www.python-httpx.org/), [pandas](https://pandas.pydata.org/), [numpy](https://numpy.org/), [matplotlib](https://matplotlib.org/), [pydantic](https://docs.pydantic.dev/), [pytest](https://docs.pytest.org/), [ruff](https://docs.astral.sh/ruff/), and stdlib `sqlite3`.
 
 ## License
 
