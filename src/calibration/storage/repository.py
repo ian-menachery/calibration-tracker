@@ -29,6 +29,7 @@ class Market:
     total_volume_usd: float | None
     fetched_at: datetime
     yes_token_id: str | None  # nullable for migrated rows pre-backfill; always set after re-discover
+    gamma_event_id: str | None  # nullable; populated by re-discover, used by fetch-tags
 
 
 @dataclass(frozen=True)
@@ -50,11 +51,14 @@ def init_db(path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(_SCHEMA_PATH.read_text())
-    # Ad-hoc migration: pre-3a-fix DBs are missing markets.yes_token_id.
-    # CREATE TABLE IF NOT EXISTS skips altering existing tables, so add it here.
+    # Ad-hoc migrations: CREATE TABLE IF NOT EXISTS skips altering existing
+    # tables, so add new columns here. Pattern: PRAGMA table_info check +
+    # ALTER TABLE ADD COLUMN (see NOTES.md for the rationale).
     cols = {row[1] for row in conn.execute("PRAGMA table_info(markets)").fetchall()}
     if "yes_token_id" not in cols:
         conn.execute("ALTER TABLE markets ADD COLUMN yes_token_id TEXT")
+    if "gamma_event_id" not in cols:
+        conn.execute("ALTER TABLE markets ADD COLUMN gamma_event_id TEXT")
     conn.commit()
     return conn
 
@@ -74,6 +78,7 @@ def upsert_markets(conn: sqlite3.Connection, markets: Iterable[Market]) -> int:
             m.total_volume_usd,
             m.fetched_at.isoformat(),
             m.yes_token_id,
+            m.gamma_event_id,
         )
         for m in markets
     ]
@@ -82,8 +87,8 @@ def upsert_markets(conn: sqlite3.Connection, markets: Iterable[Market]) -> int:
         INSERT OR REPLACE INTO markets (
             market_id, slug, question, category, market_type, parent_event_id,
             end_date, resolved_outcome, resolved_value, total_volume_usd, fetched_at,
-            yes_token_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            yes_token_id, gamma_event_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )
@@ -164,6 +169,47 @@ def markets_with_history(conn: sqlite3.Connection) -> list[str]:
     """Market IDs that have at least one row in raw_price_history. Drives Stage 3."""
     rows = conn.execute("SELECT DISTINCT market_id FROM raw_price_history").fetchall()
     return [r[0] for r in rows]
+
+
+def insert_market_tags(
+    conn: sqlite3.Connection, pairs: Iterable[tuple[str, str]]
+) -> int:
+    """INSERT OR IGNORE (market_id, tag_slug) pairs into market_tags.
+
+    Idempotent — re-running fetch-tags is a no-op for already-stored tags.
+    """
+    rows = list(pairs)
+    conn.executemany(
+        "INSERT OR IGNORE INTO market_tags (market_id, tag_slug) VALUES (?, ?)",
+        rows,
+    )
+    conn.commit()
+    return len(rows)
+
+
+def get_tags_for_market(conn: sqlite3.Connection, market_id: str) -> list[str]:
+    rows = conn.execute(
+        "SELECT tag_slug FROM market_tags WHERE market_id = ? ORDER BY tag_slug",
+        (market_id,),
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def markets_missing_tags(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+    """Markets with a known gamma_event_id but no rows in market_tags.
+
+    Returns (market_id, gamma_event_id) pairs so fetch-tags can hit the
+    Gamma /events/{id} endpoint without a second lookup.
+    """
+    rows = conn.execute(
+        """
+        SELECT m.market_id, m.gamma_event_id FROM markets m
+        LEFT JOIN market_tags t ON m.market_id = t.market_id
+        WHERE m.gamma_event_id IS NOT NULL
+          AND t.market_id IS NULL
+        """
+    ).fetchall()
+    return [(r[0], r[1]) for r in rows]
 
 
 def select_snapshot_join(

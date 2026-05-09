@@ -21,6 +21,13 @@ from calibration.storage.repository import Market
 _BARE_OFFSET_RE = re.compile(r"[+-]\d{2}$")
 
 
+class _GammaEvent(BaseModel):
+    """Minimal event submodel — only the id, used by fetch-tags downstream."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    id: str | None = None
+
+
 class GammaMarket(BaseModel):
     """Subset of Gamma /markets fields we care about for Stage 1."""
 
@@ -41,6 +48,7 @@ class GammaMarket(BaseModel):
     volume_num: float | None = Field(default=None, alias="volumeNum")
     uma_resolution_status: str | None = Field(default=None, alias="umaResolutionStatus")
     closed: bool = False
+    events: list[_GammaEvent] = Field(default_factory=list)
 
     # outcomes, outcomePrices, clobTokenIds come back as JSON-encoded strings, not arrays.
     # See NOTES.md — known Polymarket gotcha.
@@ -140,6 +148,9 @@ def _is_eligible_binary(m: GammaMarket, volume_floor: float) -> bool:
 def _to_market(m: GammaMarket, fetched_at: datetime) -> Market:
     # outcome[0] is our reference outcome; resolved_value is relative to it.
     won = m.outcome_prices[0] == "1"
+    # Standalone binaries always live in exactly one event in practice; take
+    # the first event's id (None if events is empty so fetch-tags can skip).
+    gamma_event_id = m.events[0].id if m.events else None
     return Market(
         market_id=m.condition_id,
         slug=m.slug,
@@ -153,6 +164,7 @@ def _to_market(m: GammaMarket, fetched_at: datetime) -> Market:
         total_volume_usd=m.volume_num,
         fetched_at=fetched_at,
         yes_token_id=m.clob_token_ids[0],
+        gamma_event_id=gamma_event_id,
     )
 
 

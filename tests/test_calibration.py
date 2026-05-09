@@ -129,6 +129,7 @@ def test_load_calibration_frame_roundtrip():
             total_volume_usd=5_000_000.0,
             fetched_at=datetime(2026, 5, 8, tzinfo=timezone.utc),
             yes_token_id="tok",
+            gamma_event_id="evt",
         )
         upsert_markets(conn, [m])
         upsert_snapshots(conn, [
@@ -175,7 +176,7 @@ def test_load_calibration_frame_filters_to_requested_snapshot_type():
             end_date=datetime(2026, 4, 25, tzinfo=timezone.utc),
             resolved_outcome="YES", resolved_value=1.0, total_volume_usd=1e6,
             fetched_at=datetime(2026, 5, 8, tzinfo=timezone.utc),
-            yes_token_id="tok",
+            yes_token_id="tok", gamma_event_id="evt",
         )
         upsert_markets(conn, [m])
         obs = datetime(2026, 4, 25, 1, tzinfo=timezone.utc)

@@ -12,7 +12,15 @@ CREATE TABLE IF NOT EXISTS markets (
     resolved_value   REAL,
     total_volume_usd REAL,
     fetched_at       TEXT NOT NULL,    -- ISO 8601 UTC
-    yes_token_id     TEXT              -- CLOB token id for the YES outcome; needed by Stage 2
+    yes_token_id     TEXT,             -- CLOB token id for the YES outcome; needed by Stage 2
+    gamma_event_id   TEXT              -- Gamma event id; needed by fetch-tags to look up category tags via /events/{id}
+);
+
+CREATE TABLE IF NOT EXISTS market_tags (
+    market_id  TEXT NOT NULL,
+    tag_slug   TEXT NOT NULL,
+    PRIMARY KEY (market_id, tag_slug),
+    FOREIGN KEY (market_id) REFERENCES markets(market_id)
 );
 
 CREATE TABLE IF NOT EXISTS raw_price_history (

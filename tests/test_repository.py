@@ -8,10 +8,13 @@ from calibration.storage.repository import (
     Snapshot,
     count_markets,
     get_market,
+    get_tags_for_market,
     get_ticks_for_market,
     init_db,
+    insert_market_tags,
     insert_price_ticks,
     markets_missing_history,
+    markets_missing_tags,
     upsert_markets,
     upsert_snapshots,
 )
@@ -31,6 +34,7 @@ def _market(market_id: str = "0xabc", **overrides) -> Market:
         total_volume_usd=12345.67,
         fetched_at=datetime(2026, 5, 6, 12, 0, 0, tzinfo=timezone.utc),
         yes_token_id="21742633143463906290569050155826241533067272736897614950488156847949938836455",
+        gamma_event_id="158299",
     )
     base.update(overrides)
     return Market(**base)
@@ -162,3 +166,42 @@ def test_markets_missing_history_returns_unticked_markets(conn):
     upsert_markets(conn, [_market("0xa"), _market("0xb"), _market("0xc")])
     insert_price_ticks(conn, [_tick("0xa", 0, 0.5)])
     assert sorted(markets_missing_history(conn)) == ["0xb", "0xc"]
+
+
+# ---------- market_tags ----------
+
+def test_insert_market_tags_roundtrip(conn):
+    upsert_markets(conn, [_market("0xa")])
+    insert_market_tags(conn, [("0xa", "sports"), ("0xa", "nba")])
+    assert get_tags_for_market(conn, "0xa") == ["nba", "sports"]  # ORDER BY tag_slug
+
+
+def test_insert_market_tags_is_idempotent(conn):
+    upsert_markets(conn, [_market("0xa")])
+    insert_market_tags(conn, [("0xa", "sports")])
+    insert_market_tags(conn, [("0xa", "sports")])
+    assert get_tags_for_market(conn, "0xa") == ["sports"]
+
+
+def test_get_tags_for_missing_market_returns_empty(conn):
+    assert get_tags_for_market(conn, "0xnope") == []
+
+
+def test_markets_missing_tags_skips_markets_without_event_id(conn):
+    # Two markets — one with event_id set (eligible for fetch-tags) and one without.
+    upsert_markets(conn, [
+        _market("0xa", gamma_event_id="evt-1"),
+        _market("0xb", gamma_event_id=None),
+    ])
+    pairs = markets_missing_tags(conn)
+    assert pairs == [("0xa", "evt-1")]  # 0xb is excluded because event_id is None
+
+
+def test_markets_missing_tags_excludes_already_tagged_markets(conn):
+    upsert_markets(conn, [
+        _market("0xa", gamma_event_id="evt-1"),
+        _market("0xb", gamma_event_id="evt-2"),
+    ])
+    insert_market_tags(conn, [("0xa", "sports")])
+    pairs = markets_missing_tags(conn)
+    assert pairs == [("0xb", "evt-2")]

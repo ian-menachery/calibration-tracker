@@ -20,6 +20,7 @@ def _market(end_date: datetime = END) -> Market:
         total_volume_usd=1_000_000.0,
         fetched_at=END,
         yes_token_id="tok",
+        gamma_event_id="evt",
     )
 
 
