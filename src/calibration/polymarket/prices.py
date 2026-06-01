@@ -2,7 +2,7 @@
 
 Path C from the Phase 3 plan: per market, fetch hourly fidelity for the last
 14 days plus minute fidelity for the last 24 hours, and store both. CLOB caps
-windows at ~14 days regardless of fidelity (see NOTES.md).
+windows at ~14 days regardless of fidelity (see notes/NOTES.md).
 """
 
 from __future__ import annotations

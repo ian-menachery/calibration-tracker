@@ -1,7 +1,7 @@
 """Stage 4: bucket markets by predicted probability and compute realized rates.
 
 Pure pandas/numpy on data already in SQLite. Categorization uses a slug-prefix
-heuristic — see NOTES.md for the v2 plan to replace this with proper Gamma
+heuristic — see notes/NOTES.md for the v2 plan to replace this with proper Gamma
 `events` tags.
 """
 
@@ -118,7 +118,7 @@ _CATEGORY_PATTERNS: list[tuple[str, re.Pattern]] = [
 def categorize_slug(slug: str | None) -> str:
     """Bucket a market slug into a coarse category. Returns 'other' if no match.
 
-    Heuristic — see NOTES.md "Replace slug-heuristic categorization" for the
+    Heuristic — see notes/NOTES.md "Replace slug-heuristic categorization" for the
     v2 plan to replace this with Gamma `events` tags.
     """
     if not slug:

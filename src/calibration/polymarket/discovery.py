@@ -51,7 +51,7 @@ class GammaMarket(BaseModel):
     events: list[_GammaEvent] = Field(default_factory=list)
 
     # outcomes, outcomePrices, clobTokenIds come back as JSON-encoded strings, not arrays.
-    # See NOTES.md — known Polymarket gotcha.
+    # See notes/NOTES.md — known Polymarket gotcha.
     @field_validator("outcomes", "outcome_prices", "clob_token_ids", mode="before")
     @classmethod
     def _parse_json_string(cls, v: object) -> object:

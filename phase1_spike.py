@@ -16,13 +16,13 @@ SLUG = "will-donald-trump-win-the-2024-us-presidential-election"
 QUESTION = "Will Donald Trump win the 2024 US Presidential Election?"
 YES_TOKEN = "21742633143463906290569050155826241533067272736897614950488156847949938836455"
 # umaEndDate / closedTime — actual resolution. Gamma's endDate is scheduled and drifts;
-# see NOTES.md.
+# see notes/NOTES.md.
 END_DATE = datetime(2024, 11, 6, 15, 17, 41, tzinfo=timezone.utc)
 # 6-month threshold from ARCHITECTURE.md §3. Gamma's market-listing date is not
-# the same as the first CLOB tick (see NOTES.md), so probe relative to resolution.
+# the same as the first CLOB tick (see notes/NOTES.md), so probe relative to resolution.
 EARLY_PROBE = END_DATE - timedelta(days=180)
 
-# CLOB rejects windows longer than ~14 days regardless of fidelity; see NOTES.md.
+# CLOB rejects windows longer than ~14 days regardless of fidelity; see notes/NOTES.md.
 SNAPSHOT_WINDOW_DAYS = 14
 
 

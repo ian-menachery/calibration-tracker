@@ -53,7 +53,7 @@ def init_db(path: str | Path) -> sqlite3.Connection:
     conn.executescript(_SCHEMA_PATH.read_text())
     # Ad-hoc migrations: CREATE TABLE IF NOT EXISTS skips altering existing
     # tables, so add new columns here. Pattern: PRAGMA table_info check +
-    # ALTER TABLE ADD COLUMN (see NOTES.md for the rationale).
+    # ALTER TABLE ADD COLUMN (see notes/NOTES.md for the rationale).
     cols = {row[1] for row in conn.execute("PRAGMA table_info(markets)").fetchall()}
     if "yes_token_id" not in cols:
         conn.execute("ALTER TABLE markets ADD COLUMN yes_token_id TEXT")
