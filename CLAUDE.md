@@ -1,6 +1,6 @@
 # Instructions for Claude Code
 
-This is a Polymarket calibration analysis project. The full design is in `ARCHITECTURE.md` — read it before doing anything substantive. Read `KEEP_KILL.md` if you need context on what's being carried over from the previous arb-scanner project.
+This is a Polymarket calibration analysis project. The full design is in `ARCHITECTURE.md` — read it before doing anything substantive.
 
 ## The single most important rule
 

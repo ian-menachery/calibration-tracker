@@ -78,9 +78,10 @@ Each stage is a separate module that reads from and writes to SQLite. Stages are
 [1. discovery] ──► markets table (metadata only, no prices yet)
 [2. price_fetch] ──► raw_price_history (full time series per market)
 [3. snapshot_extract] ──► price_snapshots (the 4 snapshots per market)
-[4. analysis] ──► dataframes, charts, metrics
-[5. report] ──► markdown writeup with embedded charts
+[4. analysis] ──► dataframes, charts, metrics, and the markdown writeup
 ```
+
+(The original design had a separate Stage 5 "report" module; in practice the writeup is hand-edited markdown that embeds the charts produced by stage 4, so there is no separate reporting stage.)
 
 **Stage 1 — Discovery.** Hit Polymarket's Gamma API for resolved markets. Filter to markets that actually resolved (not canceled, not pending), have non-trivial volume (set a floor like $1k to filter joke markets), and fall in the time window. Store metadata only. Run this once weekly to catch newly resolved markets.
 
@@ -135,8 +136,7 @@ calibration-tracker/
 │   │   ├── calibration.py    # bucketing, realized rates
 │   │   └── metrics.py        # Brier, log loss, bootstraps
 │   ├── reporting/
-│   │   ├── charts.py         # matplotlib chart functions
-│   │   └── report.py         # Stage 5
+│   │   └── charts.py         # matplotlib chart functions
 │   └── cli.py                # one entry point per stage
 └── tests/
     ├── test_calibration.py   # the math has to be right
@@ -144,14 +144,16 @@ calibration-tracker/
     └── test_repository.py
 ```
 
-The CLI is one Click/argparse command per stage:
+The CLI is one argparse command per stage:
 ```
 calibration discover --since 2024-01-01
-calibration fetch-prices --limit 50
+calibration fetch-tags
+calibration fetch-prices
 calibration extract-snapshots
 calibration analyze
-calibration report
 ```
+
+(A `fetch-tags` stage was added during implementation to pull per-market category tags from Gamma's `/events/{id}` endpoint into a `market_tags` table; this isn't in the original data model above but is part of the shipped pipeline. The originally-planned `report` stage was folded into `analyze` — see §5.)
 
 This matters because resumability and observability come from being able to run stages independently and inspect the DB between them.
 
@@ -183,6 +185,8 @@ Don't test API clients with mocks. They rot. Just hit the real API in a manual s
 Phase 0 → Phase 5 is the realistic v1. Estimate honestly: 4-8 weekends of focused work. If you're past week 4 and still on Phase 2, something's wrong — stop and rescope.
 
 ## 10. What to Do With the Existing Arb Scanner
+
+*Historical: this was Phase 0 work, completed before the codebase reached its current shape. The `KEEP_KILL.md` file referenced below was removed once Phase 0 was done; the verdicts in the table are preserved here as a record of what was decided.*
 
 You said you don't remember what's in it. Step zero is opening it and writing `KEEP_KILL.md` — one line per file, classifying it as KEEP / ADAPT / KILL. Do this *before* asking Claude Code to do anything else.
 
