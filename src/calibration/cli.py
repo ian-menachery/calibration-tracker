@@ -33,6 +33,9 @@ from calibration.analysis.recalibration import (
     recalibration_with_ci,
 )
 from calibration.analysis.snapshots import extract_snapshots
+from calibration.kalshi.candles import fetch_market_candles
+from calibration.kalshi.client import KalshiClient
+from calibration.kalshi.discovery import KALSHI_SERIES, fetch_settled_markets
 from calibration.polymarket.client import GammaClient
 from calibration.polymarket.discovery import (
     discover_markets,
@@ -615,6 +618,57 @@ def cmd_tick_coverage(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_kalshi_discover(args: argparse.Namespace) -> int:
+    """Discover settled binary Kalshi markets (per series) into the markets table (venue='kalshi')."""
+    conn = init_db(Path(args.db))
+    try:
+        print(f"Discovering Kalshi settled binaries across {len(KALSHI_SERIES)} series "
+              f"(<= {args.max_per_series}/series) ...")
+        total = 0
+        by_cat: dict[str, int] = {}
+        with KalshiClient() as client:
+            # Upsert per series (one DB connection, batched) so a long run is resumable.
+            for series_ticker, category in KALSHI_SERIES.items():
+                batch = list(fetch_settled_markets(client, {series_ticker: category},
+                                                   max_per_series=args.max_per_series))
+                if batch:
+                    upsert_markets(conn, batch)
+                    total += len(batch)
+                    by_cat[category] = by_cat.get(category, 0) + len(batch)
+                print(f"  {series_ticker}: {len(batch)}")
+        print(f"Upserted {total} Kalshi markets. By category: {by_cat}")
+    finally:
+        conn.close()
+    return 0
+
+
+def cmd_kalshi_fetch_candles(args: argparse.Namespace) -> int:
+    """Fetch candlesticks for Kalshi markets lacking price history (mirrors fetch-prices)."""
+    conn = init_db(Path(args.db))
+    try:
+        ids = [mid for mid in markets_missing_history(conn)
+               if (m := get_market(conn, mid)) is not None and m.venue == "kalshi"]
+        if args.limit is not None:
+            ids = ids[: args.limit]
+        print(f"Fetching candles for {len(ids)} Kalshi markets ...")
+        fetched = skipped = 0
+        with KalshiClient() as client:
+            for i, mid in enumerate(ids, 1):
+                market = get_market(conn, mid)
+                ticks = fetch_market_candles(client, market) if market else None
+                if ticks is None:
+                    skipped += 1
+                    continue
+                insert_price_ticks(conn, ticks)
+                fetched += 1
+                if i % 50 == 0:
+                    print(f"  [{i}/{len(ids)}] {fetched} fetched, {skipped} skipped")
+        print(f"Done. Fetched {fetched}, skipped {skipped} (no candles / HTTP error).")
+    finally:
+        conn.close()
+    return 0
+
+
 def cmd_extract_snapshots(args: argparse.Namespace) -> int:
     db_path = Path(args.db)
     conn = init_db(db_path)
@@ -696,6 +750,16 @@ def main(argv: list[str] | None = None) -> int:
     p_snap = sub.add_parser("extract-snapshots", help="Stage 3: extract calibration snapshots into price_snapshots")
     p_snap.add_argument("--db", default="data/markets.db")
     p_snap.set_defaults(func=cmd_extract_snapshots)
+
+    p_kd = sub.add_parser("kalshi-discover", help="phase 5: discover settled binary Kalshi markets by series")
+    p_kd.add_argument("--db", default="data/markets.db")
+    p_kd.add_argument("--max-per-series", type=int, default=500, help="cap settled markets per series")
+    p_kd.set_defaults(func=cmd_kalshi_discover)
+
+    p_kc = sub.add_parser("kalshi-fetch-candles", help="phase 5: fetch candlesticks for Kalshi markets")
+    p_kc.add_argument("--db", default="data/markets.db")
+    p_kc.add_argument("--limit", type=int, default=None, help="cap markets per run")
+    p_kc.set_defaults(func=cmd_kalshi_fetch_candles)
 
     p_bc = sub.add_parser("backfill-created", help="v2: backfill markets.created_at from Gamma")
     p_bc.add_argument("--db", default="data/markets.db")

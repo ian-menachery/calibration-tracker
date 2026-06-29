@@ -78,14 +78,17 @@ def to_market(m: KalshiMarket, category: str, fetched_at: datetime) -> Market:
 
 
 def fetch_settled_markets(
-    client: KalshiClient, series: dict[str, str], limit: int = 200
+    client: KalshiClient, series: dict[str, str], limit: int = 200, max_per_series: int = 500
 ) -> Iterator[Market]:
     """Yield settled binary Markets across the given {series_ticker: category} map,
-    cursor-paginating each series. Maps each to the venue-neutral Market shape."""
+    cursor-paginating each series. `max_per_series` caps each series (settled markets,
+    newest first) so the high-frequency daily crypto series don't pull tens of thousands
+    of 1-hour markets. Maps each to the venue-neutral Market shape."""
     fetched_at = datetime.now(timezone.utc)
     for series_ticker, category in series.items():
         cursor: str | None = None
-        while True:
+        taken = 0
+        while taken < max_per_series:
             params = {"series_ticker": series_ticker, "status": "settled", "limit": limit}
             if cursor:
                 params["cursor"] = cursor
@@ -94,6 +97,9 @@ def fetch_settled_markets(
                 m = KalshiMarket.model_validate(raw)
                 if _is_settled_binary(m):
                     yield to_market(m, category, fetched_at)
+                    taken += 1
+                    if taken >= max_per_series:
+                        break
             cursor = body.get("cursor") or ""
             if not cursor:
                 break
