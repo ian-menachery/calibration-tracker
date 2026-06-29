@@ -310,7 +310,7 @@ def cmd_backtest_rule(args: argparse.Namespace) -> int:
     conn = init_db(db_path)
     try:
         for horizon in RULE_HORIZONS:
-            df = load_calibration_frame(conn, horizon)
+            df = load_calibration_frame(conn, horizon, venue=args.venue)
             df = df[df["volume"] >= args.min_volume]  # universe filter (binary/non-disputed already)
             if len(df) < 2 * args.min_n:
                 print(f"[{horizon}] too few markets after universe filter; skipping")
@@ -381,7 +381,7 @@ def cmd_freeze_rule(args: argparse.Namespace) -> int:
     conn = init_db(db_path)
     try:
         for horizon in RULE_HORIZONS:
-            df = load_calibration_frame(conn, horizon)
+            df = load_calibration_frame(conn, horizon, venue=args.venue)
             df = df[df["volume"] >= args.min_volume]
             fit = recalibration_by_group(df, "category", n_iter=args.bootstrap,
                                          rng=np.random.default_rng(args.seed))
@@ -856,6 +856,7 @@ def main(argv: list[str] | None = None) -> int:
     p_bt.add_argument("--min-volume", type=float, default=1_000_000.0)
     p_bt.add_argument("--min-n", type=int, default=100, help="min markets for a category to be eligible")
     p_bt.add_argument("--spreads", default="0,0.01,0.02,0.03", help="comma-separated half-spreads to sweep")
+    p_bt.add_argument("--venue", default="polymarket", help="venue the rule trades (default polymarket)")
     p_bt.add_argument("--bootstrap", type=int, default=1000)
     p_bt.add_argument("--seed", type=int, default=42)
     p_bt.set_defaults(func=cmd_backtest_rule)
@@ -866,6 +867,7 @@ def main(argv: list[str] | None = None) -> int:
     p_fr.add_argument("--min-volume", type=float, default=1_000_000.0)
     p_fr.add_argument("--min-n", type=int, default=100)
     p_fr.add_argument("--kelly-fraction", type=float, default=0.25)
+    p_fr.add_argument("--venue", default="polymarket", help="venue the rule trades (default polymarket)")
     p_fr.add_argument("--bootstrap", type=int, default=1000)
     p_fr.add_argument("--seed", type=int, default=42)
     p_fr.set_defaults(func=cmd_freeze_rule)
