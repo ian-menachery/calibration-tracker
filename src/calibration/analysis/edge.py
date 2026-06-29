@@ -66,6 +66,29 @@ def kalshi_fee(price: float, rate: float = 0.07) -> float:
     return float(rate) * float(price) * (1.0 - float(price))
 
 
+def simulate_position(
+    p: float, q_hat: float, outcome: float, half_spread: float = 0.0, fee: float = 0.0
+) -> tuple[str, float, float] | None:
+    """Realized P&L per $1-payoff contract for one market, held to resolution.
+
+    Entry crosses half the spread (plus fee) on the chosen side. Returns
+    (side, predicted_edge, realized_pnl), or None if the rule takes no position.
+    YES pays `outcome`; NO pays `1 - outcome`.
+    """
+    side = side_for(p, q_hat)
+    if side is None:
+        return None
+    if side == "YES":
+        entry = float(p) + half_spread + fee
+        realized = float(outcome) - entry
+        pred_edge = float(q_hat) - float(p)
+    else:
+        entry = (1.0 - float(p)) + half_spread + fee
+        realized = (1.0 - float(outcome)) - entry
+        pred_edge = float(p) - float(q_hat)
+    return side, pred_edge, realized
+
+
 def passes_universe(
     volume: float | None,
     market_type: str = "binary",

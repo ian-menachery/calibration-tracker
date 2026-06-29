@@ -11,6 +11,7 @@ from calibration.analysis.edge import (
     net_edge,
     passes_universe,
     side_for,
+    simulate_position,
 )
 from calibration.analysis.recalibration import predict_band
 
@@ -62,6 +63,20 @@ def test_passes_universe_filter():
     assert passes_universe(2_000_000.0, disputed=True) is False
     assert passes_universe(2_000_000.0, market_type="multi") is False
     assert passes_universe(None) is False
+
+
+def test_simulate_position_yes_and_no():
+    # YES, fair 0.6 > price 0.5, no spread: win pays 1 -> +0.5, loss -> -0.5.
+    assert simulate_position(0.5, 0.6, 1.0) == ("YES", pytest.approx(0.1), pytest.approx(0.5))
+    assert simulate_position(0.5, 0.6, 0.0) == ("YES", pytest.approx(0.1), pytest.approx(-0.5))
+    # NO, fair 0.4 < price 0.5: NO wins when outcome=0 -> (1-0)-0.5 = +0.5.
+    assert simulate_position(0.5, 0.4, 0.0) == ("NO", pytest.approx(0.1), pytest.approx(0.5))
+
+
+def test_simulate_position_spread_reduces_pnl_and_flat_is_none():
+    side, pred, pnl = simulate_position(0.5, 0.6, 1.0, half_spread=0.02)
+    assert side == "YES" and pnl == pytest.approx(0.48)
+    assert simulate_position(0.5, 0.5, 1.0) is None
 
 
 def _simulate(a_true, b_true, n, seed):
