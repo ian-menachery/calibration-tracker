@@ -70,6 +70,27 @@ def fetch_window(
     ]
 
 
+def fetch_order_book(client: CLOBClient, token: str) -> dict | None:
+    """Fetch the live CLOB order book for a token and normalize it best-first.
+
+    The CLOB returns bids ascending and asks descending (best price last) with string
+    values; we parse to floats and sort bids desc / asks asc so the best level is first
+    (what vwap_fill expects). Returns {bids, asks, best_bid, best_ask} or None on HTTP
+    error / empty book.
+    """
+    try:
+        book = client.get("/book", token_id=token)
+    except httpx.HTTPError:
+        return None
+    bids = sorted(((float(b["price"]), float(b["size"])) for b in book.get("bids") or []),
+                  key=lambda x: x[0], reverse=True)
+    asks = sorted(((float(a["price"]), float(a["size"])) for a in book.get("asks") or []),
+                  key=lambda x: x[0])
+    if not bids or not asks:
+        return None
+    return {"bids": bids, "asks": asks, "best_bid": bids[0][0], "best_ask": asks[0][0]}
+
+
 def fetch_market_history(client: CLOBClient, market: Market) -> list[PriceTick] | None:
     """Path C fetch: hourly 14d + minute 24h. Returns None on any HTTP/network
     error or empty response. httpx.HTTPError covers HTTPStatusError (4xx/5xx)
