@@ -45,6 +45,7 @@ class GammaMarket(BaseModel):
     outcome_prices: list[str] = Field(default_factory=list, alias="outcomePrices")
     clob_token_ids: list[str] = Field(default_factory=list, alias="clobTokenIds")
     uma_end_date: datetime | None = Field(default=None, alias="umaEndDate")
+    created_at: datetime | None = Field(default=None, alias="createdAt")
     volume_num: float | None = Field(default=None, alias="volumeNum")
     uma_resolution_status: str | None = Field(default=None, alias="umaResolutionStatus")
     closed: bool = False
@@ -64,7 +65,7 @@ class GammaMarket(BaseModel):
     # also have outright garbage values like 'NOW*()'. Pad bare offsets and
     # return None for unparseable strings so the market gets filtered out
     # downstream rather than crashing the whole fetch.
-    @field_validator("uma_end_date", mode="before")
+    @field_validator("uma_end_date", "created_at", mode="before")
     @classmethod
     def _normalize_dt(cls, v: object) -> object:
         if not isinstance(v, str):
@@ -165,7 +166,32 @@ def _to_market(m: GammaMarket, fetched_at: datetime) -> Market:
         fetched_at=fetched_at,
         yes_token_id=m.clob_token_ids[0],
         gamma_event_id=gamma_event_id,
+        created_at=m.created_at,
     )
+
+
+def fetch_markets_by_ids(
+    client: GammaClient,
+    condition_ids: list[str],
+    batch_size: int = 50,
+) -> Iterator[GammaMarket]:
+    """Re-fetch already-stored markets by condition_id, in batches.
+
+    Used by the created_at backfill: discovery captures created_at natively now,
+    but rows discovered before the column existed need it filled in. Gamma
+    /markets returns closed markets only when closed=true is set, and accepts a
+    repeated condition_ids param (httpx serializes the list as repeated keys).
+    """
+    for start in range(0, len(condition_ids), batch_size):
+        batch = condition_ids[start : start + batch_size]
+        page = client.get(
+            "/markets",
+            closed="true",
+            condition_ids=batch,
+            limit=batch_size,
+        )
+        for raw in page or []:
+            yield GammaMarket.model_validate(raw)
 
 
 def discover_markets(
