@@ -52,6 +52,7 @@ markets
   resolved_value     REAL                 -- 1.0 for YES, 0.0 for NO
   total_volume_usd   REAL
   fetched_at         TIMESTAMP
+  created_at         TIMESTAMP NULL        -- Gamma createdAt; market origin, for time-to-resolution (v2; backfilled — see §14)
 
 price_snapshots
   market_id          TEXT
@@ -92,6 +93,8 @@ Each stage is a separate module that reads from and writes to SQLite. Stages are
 **Stage 4 — Analysis.** Pure pandas. Bucket markets by predicted price (10 buckets of width 0.1 is the standard; you'll want both decile buckets and finer 5% buckets). Compute realized rate per bucket. Compute Brier score and log loss overall and by subgroup. Bootstrap confidence intervals on the per-bucket realized rates because the bucket counts will be uneven.
 
 **Stage 5 — Report.** Generate the writeup as a single markdown file with charts saved to `reports/figures/`. The writeup is a deliverable, not a side effect — treat it as the actual product.
+
+**v2 stages (favorite-longshot measurement).** Three stages were added on top of the v1 pipeline, all idempotent/resumable like the rest: `backfill-created` (fetch `markets.created_at` from Gamma so time-to-resolution is derivable), `tick-coverage` (data-quality diagnostic flagging markets with <7d of price history before resolution), and `flb` (the analysis stage that fits the recalibration map and emits the FLB results). See §14 for the full description.
 
 ## 6. Tech Stack (Minimal On Purpose)
 
@@ -134,7 +137,8 @@ calibration-tracker/
 │   ├── analysis/
 │   │   ├── snapshots.py      # Stage 3
 │   │   ├── calibration.py    # bucketing, realized rates
-│   │   └── metrics.py        # Brier, log loss, bootstraps
+│   │   ├── metrics.py        # Brier, log loss, bootstraps
+│   │   └── recalibration.py  # v2: logit recalibration fit (FLB), see §14
 │   ├── reporting/
 │   │   └── charts.py         # matplotlib chart functions
 │   └── cli.py                # one entry point per stage
@@ -151,9 +155,12 @@ calibration fetch-tags
 calibration fetch-prices
 calibration extract-snapshots
 calibration analyze
+calibration backfill-created      # v2: backfill markets.created_at from Gamma (§14)
+calibration tick-coverage         # v2: flag markets with <7d of history before resolution (§14)
+calibration flb                   # v2: favorite-longshot recalibration fit (§14)
 ```
 
-(A `fetch-tags` stage was added during implementation to pull per-market category tags from Gamma's `/events/{id}` endpoint into a `market_tags` table; this isn't in the original data model above but is part of the shipped pipeline. The originally-planned `report` stage was folded into `analyze` — see §5.)
+(A `fetch-tags` stage was added during implementation to pull per-market category tags from Gamma's `/events/{id}` endpoint into a `market_tags` table; this isn't in the original data model above but is part of the shipped pipeline. The originally-planned `report` stage was folded into `analyze` — see §5. The `backfill-created` / `tick-coverage` / `flb` stages are the v2 favorite-longshot extension — see §14.)
 
 This matters because resumability and observability come from being able to run stages independently and inspect the DB between them.
 
@@ -244,3 +251,24 @@ These are real but don't block starting:
 3. **Selection bias on which markets exist.** Polymarket only lists markets people want to bet on; "popular" markets may be more or less calibrated than rare ones. Mitigation: acknowledge in the writeup, cohort by volume.
 4. **Volume-weighted vs market-weighted calibration.** Both are interesting. v1: report both, pick one for the headline chart based on what's more legible.
 5. **Scope creep into trading.** If you find yourself thinking "huh, the 80% bucket is actually 73%, that's exploitable" — don't. That's a different project that loses money. Stay analytical.
+
+## 14. v2 Extension: Favorite-Longshot Measurement (FLB)
+
+v1/v1.1 answered *"is Polymarket calibrated?"* with reliability diagrams and Brier scores. v2 quantifies the *shape* of the miscalibration as a single interpretable parameter and stress-tests it. This is **measurement, not trading** — the same scope ceiling in §13.5 applies. It is built in phases (Phase 0 unblock → Phase 1 measurement → Phase 2 backfill); Phase 3 (sized rule) and Phase 4 (forward test) are designed but deliberately not built.
+
+**The recalibration map.** Fit `logit(q) = a + b·logit(p)` where `p` is the snapshot price and `q` the realized outcome, by a pure-numpy binomial IRLS in `analysis/recalibration.py`. `a≈0, b≈1` is perfect calibration; **`b < 1` is the favorite-longshot signature** (the realized curve is flatter than the diagonal — longshots resolve YES less often than priced, favorites more). The fit has a separation guard (coefficients diverging past ±30 → `nan`), so saturated horizons degrade gracefully rather than reporting spurious values. CIs come from a paired bootstrap reusing the same resampling philosophy as `metrics.bootstrap_ci`.
+
+**New data:** `markets.created_at` (Gamma `createdAt`), backfilled for existing rows by `backfill-created` and captured natively by discovery going forward. It makes market lifespan / time-to-resolution derivable.
+
+**New stages (all idempotent/resumable):**
+- `backfill-created` — re-fetch stored markets by `condition_id` (batched, `closed=true`) to fill `created_at`.
+- `tick-coverage` — pure-SQL diagnostic writing `reports/flb_tick_coverage.csv`; flags markets whose first price tick is <7d before resolution (their T-7d snapshot is the opening tick stretched to tolerance, not a true 7-days-before price).
+- `flb` — fits the recalibration map per horizon and per slice (volume quartile, era, category, time-to-resolution, temporal train/test split, and an all-horizons-intersection cohort that holds the population constant), plus market-vs-recalibrated Brier and tail-power counts. Writes `reports/flb_recalibration.csv`.
+
+**Methodology guardrails (enforced in the analysis):** no model in the scoring path (price vs outcome only; category is a slice label, never a score); out-of-sample temporal split for any headline `b`; population held constant across horizon/era comparisons.
+
+**Headline results (current dataset):** clear FLB at the tradeable horizons — T-24h `b≈0.88`, T-7d `b≈0.72`; T-close is saturated (prices ≈ outcomes, Brier ≈ 0) so `b` is undefined there and flagged. The bias is **concentrated in sports** (`b≈0.83`, the largest cohort, Brier ≈ chance) while politics and geopolitics run `b > 1` (real signal) — consistent with the v1.1 sports-vs-politics headline. A map fit on older markets does **not** improve Brier out-of-sample, i.e. historical edge ≠ live edge.
+
+**Stack:** unchanged from §6 — numpy/pandas only, no sklearn/scipy. (The only new dependency contemplated for later phases is the Anthropic SDK, and only if category labelling ever needs an LLM fallback; the current rule-based tag mapping covers ~98% of markets, so it is not used.)
+
+**Deferred (designed, not built):** Phase 3 expresses the map as an edge function `e(p)=q̂(p)−p` with fractional-Kelly sizing and a spread/fee cost model; Phase 4 pre-registers the frozen map and forward-tests it on new markets. Both remain out of scope until explicitly requested.
