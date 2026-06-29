@@ -139,15 +139,16 @@ def categorize_market(slug: str | None, tags: list[str]) -> str:
 
 
 def load_calibration_frame(
-    conn: sqlite3.Connection, snapshot_type: str
+    conn: sqlite3.Connection, snapshot_type: str, venue: str | None = None
 ) -> pd.DataFrame:
     """Pull markets x price_snapshots into a DataFrame for analysis.
 
     Categorization (v1.1): each market's category is derived from its
     Gamma tags via `_CATEGORY_MAPPING`; if none of the market's tags
-    match a known bucket, falls back to the v1 slug heuristic.
+    match a known bucket, falls back to the v1 slug heuristic. Pass `venue`
+    to restrict to one venue (Phase 5 cross-venue).
     """
-    rows = select_snapshot_join(conn, snapshot_type)
+    rows = select_snapshot_join(conn, snapshot_type, venue=venue)
     df = pd.DataFrame(
         rows,
         columns=["market_id", "slug", "predicted", "outcome", "volume", "end_date", "created_at"],
