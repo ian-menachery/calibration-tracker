@@ -172,6 +172,18 @@ def cmd_flb(args: argparse.Namespace) -> int:
             df["era"] = _era(df["end_date"])
             rows.append(_tagged("era", df, "era"))
 
+            rows.append(_tagged("category", df, "category"))
+
+            # Time-to-resolution: market lifespan = end_date - created_at (Gamma backfill).
+            created = pd.to_datetime(df["created_at"], utc=True, format="ISO8601", errors="coerce")
+            enddt = pd.to_datetime(df["end_date"], utc=True, format="ISO8601")
+            lifespan_days = (enddt - created).dt.total_seconds() / 86400.0
+            df["ttr_bucket"] = pd.cut(
+                lifespan_days, bins=[0, 2, 7, 30, float("inf")],
+                labels=["<2d", "2-7d", "7-30d", ">30d"], right=False,
+            )  # markets with no created_at -> NaN bucket, dropped by groupby(observed=True)
+            rows.append(_tagged("ttr", df, "ttr_bucket"))
+
             # Temporal split: fit on older markets, validate on newer (mirrors deployment).
             # end_date is stored as a uniform ISO-8601 UTC string, so lexicographic
             # order is chronological: take the median by position rather than a
