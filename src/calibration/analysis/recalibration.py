@@ -33,17 +33,26 @@ def _sigmoid(z: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-z))
 
 
+# Coefficient magnitude beyond which the fit is treated as separated/degenerate.
+# logit coefficients past this make sigmoid saturate (prob ~ 0 or 1); no finite
+# MLE exists. Real recalibration b lands near [0.5, 1.5], so this never trips a
+# genuine fit — it only catches saturated horizons (e.g. T-close) and lets them
+# bail to nan fast instead of grinding all max_iter on every bootstrap resample.
+_SEPARATION_GUARD = 30.0
+
+
 def fit_logit_recalibration(
     predicted,
     outcome,
     eps: float = _EPS,
-    max_iter: int = 100,
+    max_iter: int = 50,
     tol: float = 1e-8,
 ) -> tuple[float, float]:
     """Fit logit(q) = a + b*logit(p) by IRLS. Returns (a, b).
 
-    Returns (nan, nan) for a degenerate fit: fewer than 2 rows, or all outcomes
-    identical (perfect separation, no finite MLE).
+    Returns (nan, nan) for a degenerate fit: fewer than 2 rows, all outcomes
+    identical, or perfect/near separation (coefficients diverge, no finite MLE —
+    this is the saturated case, e.g. T-close where prices already equal outcomes).
     """
     x = _logit(predicted, eps)
     y = np.asarray(outcome, dtype=float)
@@ -61,6 +70,8 @@ def fit_logit_recalibration(
         except np.linalg.LinAlgError:
             return (_NAN, _NAN)
         beta = beta + step
+        if not np.all(np.isfinite(beta)) or np.max(np.abs(beta)) > _SEPARATION_GUARD:
+            return (_NAN, _NAN)  # diverging -> separated, no finite MLE
         if np.max(np.abs(step)) < tol:
             break
     return (float(beta[0]), float(beta[1]))
