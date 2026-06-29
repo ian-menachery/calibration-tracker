@@ -12,6 +12,7 @@ from calibration.analysis.edge import (
     passes_universe,
     side_for,
     simulate_position,
+    vwap_fill,
 )
 from calibration.analysis.recalibration import predict_band
 
@@ -77,6 +78,14 @@ def test_simulate_position_spread_reduces_pnl_and_flat_is_none():
     side, pred, pnl = simulate_position(0.5, 0.6, 1.0, half_spread=0.02)
     assert side == "YES" and pnl == pytest.approx(0.48)
     assert simulate_position(0.5, 0.5, 1.0) is None
+
+
+def test_vwap_fill_walks_levels_and_returns_none_when_thin():
+    asks = [(0.90, 100.0), (0.92, 100.0)]
+    # fill 150: 100@0.90 + 50@0.92 = 136/150
+    assert vwap_fill(asks, 150.0) == pytest.approx(136.0 / 150.0)
+    assert vwap_fill(asks, 100.0) == pytest.approx(0.90)
+    assert vwap_fill(asks, 300.0) is None  # only 200 of depth
 
 
 def _simulate(a_true, b_true, n, seed):

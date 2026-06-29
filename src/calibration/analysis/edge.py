@@ -66,6 +66,27 @@ def kalshi_fee(price: float, rate: float = 0.07) -> float:
     return float(rate) * float(price) * (1.0 - float(price))
 
 
+def vwap_fill(levels: list[tuple[float, float]], target_size: float) -> float | None:
+    """Size-weighted average fill price walking an order-book side best-first.
+
+    `levels` are (price, size) pairs already ordered best-first (asks ascending,
+    bids descending). Returns the VWAP to fill `target_size`, or None if the book
+    is too thin to fill it. This is the realizable entry price (you cross the book),
+    the honest cost the mid price hides.
+    """
+    filled = 0.0
+    notional = 0.0
+    for price, size in levels:
+        take = min(size, target_size - filled)
+        if take <= 0:
+            break
+        notional += take * price
+        filled += take
+        if filled >= target_size:
+            return notional / filled
+    return None
+
+
 def simulate_position(
     p: float, q_hat: float, outcome: float, half_spread: float = 0.0, fee: float = 0.0
 ) -> tuple[str, float, float] | None:
