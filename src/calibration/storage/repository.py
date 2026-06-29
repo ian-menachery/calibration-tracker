@@ -311,14 +311,15 @@ def select_snapshot_join(
     """markets x price_snapshots for one snapshot type. Drives Stage 4 analysis.
 
     Returns rows of (market_id, slug, predicted_price, resolved_value,
-    total_volume_usd, end_date, created_at). Filters out rows missing
+    total_volume_usd, end_date, created_at, category). Filters out rows missing
     resolved_value defensively (shouldn't happen with our discover filter,
-    but the math can't handle NULL outcomes). created_at may be NULL for
-    rows not yet backfilled. Pass `venue` to restrict to one venue.
+    but the math can't handle NULL outcomes). created_at/category may be NULL
+    (Polymarket stores NULL category and derives it at analysis time; Kalshi
+    stores its series-based category). Pass `venue` to restrict to one venue.
     """
     sql = """
         SELECT m.market_id, m.slug, s.price, m.resolved_value,
-               m.total_volume_usd, m.end_date, m.created_at
+               m.total_volume_usd, m.end_date, m.created_at, m.category
         FROM markets m
         JOIN price_snapshots s ON s.market_id = m.market_id
         WHERE s.snapshot_type = ?

@@ -151,16 +151,23 @@ def load_calibration_frame(
     rows = select_snapshot_join(conn, snapshot_type, venue=venue)
     df = pd.DataFrame(
         rows,
-        columns=["market_id", "slug", "predicted", "outcome", "volume", "end_date", "created_at"],
+        columns=["market_id", "slug", "predicted", "outcome", "volume", "end_date",
+                 "created_at", "stored_category"],
     )
     if df.empty:
         df["category"] = pd.Series(dtype=str)
         return df
     tags_by_market = get_tags_for_markets(conn, df["market_id"].tolist())
-    df["category"] = df.apply(
-        lambda row: categorize_market(row["slug"], tags_by_market.get(row["market_id"], [])),
-        axis=1,
-    )
+
+    def _category(row):
+        # Use the stored category when present (Kalshi's series-based label); otherwise
+        # derive it (Polymarket stores NULL and categorizes from tags / slug).
+        if row["stored_category"]:
+            return row["stored_category"]
+        return categorize_market(row["slug"], tags_by_market.get(row["market_id"], []))
+
+    df["category"] = df.apply(_category, axis=1)
+    df = df.drop(columns=["stored_category"])
     return df
 
 
