@@ -16,6 +16,11 @@ from calibration.analysis.calibration import (
     compute_metrics,
     load_calibration_frame,
 )
+from calibration.analysis.recalibration import (
+    recalibrated_brier,
+    recalibration_by_group,
+    recalibration_with_ci,
+)
 from calibration.analysis.snapshots import extract_snapshots
 from calibration.polymarket.client import GammaClient
 from calibration.polymarket.discovery import discover_markets
@@ -111,6 +116,134 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     if all_metrics:
         pd.concat(all_metrics, ignore_index=True).to_csv(out_dir / "calibration_metrics.csv", index=False)
     print(f"Wrote bucket-level + metrics CSVs to {out_dir}/")
+    return 0
+
+
+HEADLINE_HORIZONS = ("close", "24h")  # full 4,532 coverage; 7d is restricted secondary
+
+
+def _era(end_date: pd.Series) -> pd.Series:
+    """Half-year era label (e.g. '2025-H1') from an ISO end_date string column."""
+    dt = pd.to_datetime(end_date, utc=True, format="ISO8601")
+    half = np.where(dt.dt.month <= 6, "H1", "H2")
+    return dt.dt.year.astype(str) + "-" + half
+
+
+def cmd_flb(args: argparse.Namespace) -> int:
+    """Favorite-longshot bias: fit logit(q)=a+b*logit(p) per horizon and slice."""
+    db_path = Path(args.db)
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    n_iter = args.bootstrap
+
+    def _rng() -> np.random.Generator:
+        # Fresh generator per fit-set so adding/reordering slices can't shift
+        # another slice's CIs; reproducible given --seed.
+        return np.random.default_rng(args.seed)
+
+    rows: list[pd.DataFrame] = []
+    frames: dict[str, pd.DataFrame] = {}
+    conn = init_db(db_path)
+    try:
+        for snap in SNAPSHOT_TYPES:
+            df = load_calibration_frame(conn, snap)
+            if df.empty:
+                print(f"[{snap}] no rows; skipping")
+                continue
+            frames[snap] = df
+
+            def _tagged(kind: str, frame: pd.DataFrame, group_col: str | None) -> pd.DataFrame:
+                out = recalibration_by_group(frame, group_col=group_col, n_iter=n_iter, rng=_rng())
+                out.insert(0, "snapshot_type", snap)
+                out.insert(1, "slice_kind", kind)
+                return out
+
+            rows.append(_tagged("overall", df, None))
+
+            df = df.copy()
+            df["volume_quartile"] = pd.qcut(
+                df["volume"], q=4, labels=["q1", "q2", "q3", "q4"], duplicates="drop"
+            )
+            rows.append(_tagged("volume", df, "volume_quartile"))
+
+            df["era"] = _era(df["end_date"])
+            rows.append(_tagged("era", df, "era"))
+
+            # Temporal split: fit on older markets, validate on newer (mirrors deployment).
+            # end_date is stored as a uniform ISO-8601 UTC string, so lexicographic
+            # order is chronological: take the median by position rather than a
+            # numeric quantile (which can't subtract strings).
+            if args.cutoff is not None:
+                cutoff = args.cutoff
+            else:
+                ordered = df["end_date"].sort_values().to_numpy()
+                cutoff = ordered[len(ordered) // 2]
+            train = df[df["end_date"] < cutoff]
+            test = df[df["end_date"] >= cutoff]
+            temporal: list[dict] = []
+            if len(train) >= 2 and len(test) >= 2:
+                ins = recalibration_with_ci(train["predicted"].to_numpy(), train["outcome"].to_numpy(),
+                                            n_iter=n_iter, rng=_rng())
+                oos = recalibration_with_ci(test["predicted"].to_numpy(), test["outcome"].to_numpy(),
+                                            n_iter=n_iter, rng=_rng())
+                a_tr, b_tr = ins["a"], ins["b"]
+                temporal.append({"subgroup": "insample", **ins})
+                temporal.append({"subgroup": "oos_refit", **oos})
+                # Honest OOS edge: apply the train-fit map to the held-out future.
+                tp, ty = test["predicted"].to_numpy(), test["outcome"].to_numpy()
+                temporal.append({
+                    "subgroup": "oos_trainmap", "n": int(len(ty)), "a": a_tr, "b": b_tr,
+                    "a_ci_lo": float("nan"), "a_ci_hi": float("nan"),
+                    "b_ci_lo": float("nan"), "b_ci_hi": float("nan"),
+                    "brier_market": float(np.mean((tp - ty) ** 2)),
+                    "brier_recal": recalibrated_brier(tp, ty, a_tr, b_tr),
+                })
+                tdf = pd.DataFrame(temporal)
+                tdf.insert(0, "snapshot_type", snap)
+                tdf.insert(1, "slice_kind", "temporal")
+                rows.append(tdf)
+
+            # Tail power: how many markets live where the rule wants to act.
+            tail_lo = int((df["predicted"] < 0.05).sum())
+            tail_hi = int((df["predicted"] > 0.95).sum())
+            print(f"[{snap}] n={len(df):>5,}  tails: p<0.05 -> {tail_lo}, p>0.95 -> {tail_hi}")
+
+        # Intersection cohort: hold the population constant across horizons.
+        common = ("close", "24h", "7d")
+        if all(h in frames for h in common):
+            shared = set(frames[common[0]]["market_id"])
+            for h in common[1:]:
+                shared &= set(frames[h]["market_id"])
+            for h in common:
+                sub = frames[h][frames[h]["market_id"].isin(shared)]
+                isec = recalibration_by_group(sub, group_col=None, n_iter=n_iter, rng=_rng())
+                isec["subgroup"] = f"{h}@intersection"
+                isec.insert(0, "snapshot_type", h)
+                isec.insert(1, "slice_kind", "intersection")
+                rows.append(isec)
+            print(f"[intersection] {len(shared):,} markets present at all of {common}")
+    finally:
+        conn.close()
+
+    if not rows:
+        print("No data; nothing written.")
+        return 0
+    result = pd.concat(rows, ignore_index=True)
+    out_csv = out_dir / "flb_recalibration.csv"
+    result.to_csv(out_csv, index=False)
+
+    # Headline: overall b at the full-coverage horizons.
+    print("\n=== FLB headline (b < 1 = favorite-longshot bias) ===")
+    overall = result[(result["slice_kind"] == "overall") & (result["snapshot_type"].isin(HEADLINE_HORIZONS))]
+    for _, r in overall.iterrows():
+        # A near-zero market Brier means prices are already saturated at ~0/1
+        # (e.g. T-close on resolved markets): the fit degenerates and b is
+        # meaningless. Flag it rather than report a spurious headline.
+        note = "  (SATURATED: prices ~= outcome; FLB undefined)" if r["brier_market"] < 0.01 else ""
+        print(f"  T-{r['snapshot_type']:<5} b={r['b']:.3f} "
+              f"[{r['b_ci_lo']:.3f}, {r['b_ci_hi']:.3f}]  a={r['a']:.3f}  n={int(r['n']):,}  "
+              f"brier_market={r['brier_market']:.4f} brier_recal={r['brier_recal']:.4f}{note}")
+    print(f"\nWrote {len(result)} rows to {out_csv}")
     return 0
 
 
@@ -229,6 +362,15 @@ def main(argv: list[str] | None = None) -> int:
     p_an.add_argument("--bootstrap", type=int, default=1000, help="bootstrap iterations for per-bucket CIs")
     p_an.add_argument("--seed", type=int, default=42, help="rng seed for reproducible bootstrap CIs")
     p_an.set_defaults(func=cmd_analyze)
+
+    p_flb = sub.add_parser("flb", help="favorite-longshot bias: fit logit(q)=a+b*logit(p) per horizon/slice")
+    p_flb.add_argument("--db", default="data/markets.db")
+    p_flb.add_argument("--out", default="reports", help="output directory for flb_recalibration.csv")
+    p_flb.add_argument("--bootstrap", type=int, default=1000, help="bootstrap iterations for a/b CIs")
+    p_flb.add_argument("--seed", type=int, default=42, help="rng seed for reproducible bootstrap CIs")
+    p_flb.add_argument("--cutoff", default=None,
+                       help="ISO end_date splitting train/test for the temporal slice (default: median)")
+    p_flb.set_defaults(func=cmd_flb)
 
     args = parser.parse_args(argv)
     return args.func(args)
