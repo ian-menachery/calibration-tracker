@@ -17,7 +17,14 @@ from calibration.analysis.calibration import (
     compute_metrics,
     load_calibration_frame,
 )
-from calibration.analysis.edge import simulate_position
+from calibration.analysis.calibration import categorize_slug
+from calibration.analysis.edge import (
+    fractional_kelly,
+    kelly_fraction,
+    side_for,
+    simulate_position,
+    vwap_fill,
+)
 from calibration.analysis.recalibration import (
     apply_recalibration,
     predict_band,
@@ -27,21 +34,29 @@ from calibration.analysis.recalibration import (
 )
 from calibration.analysis.snapshots import extract_snapshots
 from calibration.polymarket.client import GammaClient
-from calibration.polymarket.discovery import discover_markets, fetch_markets_by_ids
-from calibration.polymarket.prices import CLOBClient, fetch_market_history
+from calibration.polymarket.discovery import (
+    discover_markets,
+    fetch_markets_by_ids,
+    fetch_open_markets,
+)
+from calibration.polymarket.prices import CLOBClient, fetch_market_history, fetch_order_book
 from calibration.polymarket.tags import fetch_event_tags
 from calibration.reporting.charts import plot_calibration_curve
 from calibration.storage.repository import (
+    ForwardSignal,
     get_market,
     get_ticks_for_market,
     init_db,
     insert_market_tags,
     insert_price_ticks,
+    insert_signals,
+    mark_signal_resolved,
     markets_missing_created_at,
     markets_missing_history,
     markets_missing_tags,
     markets_with_history,
     min_tick_per_market,
+    open_signals,
     set_market_created_at,
     upsert_markets,
     upsert_snapshots,
@@ -390,6 +405,128 @@ def cmd_freeze_rule(args: argparse.Namespace) -> int:
     return 0
 
 
+def _interp(grid: list[float], arr: list[float], x: float) -> float:
+    return float(np.interp(x, np.asarray(grid), np.asarray(arr)))
+
+
+def cmd_forward_scan(args: argparse.Namespace) -> int:
+    """Apply the FROZEN rule to live open markets near their entry horizon and log
+    realizable paper fills. No fitting on forward data."""
+    rule = json.loads(Path(args.rule).read_text())
+    horizons = rule["horizons"]
+    kelly_frac = rule["kelly_fraction"]
+    min_volume = rule["universe"]["min_volume"]
+    size = args.size
+    now = datetime.now(timezone.utc)
+    windows = {"24h": (24.0, args.window_hours), "7d": (168.0, args.window_hours_7d)}
+
+    conn = init_db(Path(args.db))
+    scanned = 0
+    skipped_book = 0
+    logged = {h: 0 for h in horizons}
+    try:
+        with GammaClient() as g:
+            candidates = list(fetch_open_markets(g, volume_floor=min_volume))
+        print(f"Scanning {len(candidates)} open candidates at {now.isoformat()} ...")
+        with CLOBClient() as c:
+            for m in candidates:
+                scanned += 1
+                hours = (m.scheduled_end - now).total_seconds() / 3600.0
+                for horizon, (target_h, win) in windows.items():
+                    if horizon not in horizons or not (target_h - win <= hours <= target_h + win):
+                        continue
+                    cat = categorize_slug(m.slug)
+                    centry = horizons[horizon]["categories"].get(cat)
+                    if not centry or not centry.get("eligible"):
+                        continue
+                    book = fetch_order_book(c, m.clob_token_ids[0])
+                    if book is None:
+                        skipped_book += 1
+                        continue
+                    mid = (book["best_bid"] + book["best_ask"]) / 2.0
+                    half_spread = (book["best_ask"] - book["best_bid"]) / 2.0
+                    grid = centry["grid"]
+                    q_hat = _interp(grid, centry["q_hat"], mid)
+                    side = side_for(mid, q_hat)
+                    if side is None:
+                        continue
+                    if side == "YES":
+                        q_used = _interp(grid, centry["q_lo"], mid)
+                        entry = vwap_fill(book["asks"], size)
+                        if entry is None:
+                            skipped_book += 1
+                            continue
+                        edge_gross, edge_net = q_hat - mid, q_used - entry
+                    else:
+                        q_used = _interp(grid, centry["q_hi"], mid)
+                        bid_vwap = vwap_fill(book["bids"], size)
+                        if bid_vwap is None:
+                            skipped_book += 1
+                            continue
+                        entry = 1.0 - bid_vwap
+                        edge_gross, edge_net = mid - q_hat, (1.0 - q_used) - entry
+                    if edge_net <= 0:
+                        continue  # edge eaten by the spread -> rule takes no position
+                    stake = fractional_kelly(kelly_fraction(q_used, mid, side), kelly_frac)
+                    if stake <= 0:
+                        continue
+                    insert_signals(conn, [ForwardSignal(
+                        market_id=m.condition_id, venue="polymarket", horizon=horizon,
+                        observed_at=now, category=cat, market_price=mid, side=side, q_hat=q_hat,
+                        q_used=q_used, edge_gross=edge_gross, half_spread=half_spread, fee=0.0,
+                        edge_net=edge_net, stake_fraction=stake, entry_price=entry,
+                        end_date=m.scheduled_end,
+                    )])
+                    logged[horizon] += 1
+    finally:
+        conn.close()
+    print(f"Scanned {scanned}; logged {logged} (skipped {skipped_book} thin/one-sided books). "
+          f"Re-scans are idempotent (entry locked per market+horizon).")
+    return 0
+
+
+def cmd_forward_settle(args: argparse.Namespace) -> int:
+    """Settle open forward signals whose markets have resolved: record outcome, realized
+    P&L (held to resolution), and realized-minus-predicted edge. Disputed -> void."""
+    now = datetime.now(timezone.utc)
+    conn = init_db(Path(args.db))
+    resolved = voided = still_open = 0
+    pnls: list[float] = []
+    gaps: list[float] = []
+    try:
+        sigs = open_signals(conn)
+        print(f"Checking {len(sigs)} open signals ...")
+        with GammaClient() as g:
+            for s in sigs:
+                rows = list(fetch_markets_by_ids(g, [s.market_id]))  # closed=true: empty until resolved
+                if not rows or not rows[0].closed:
+                    still_open += 1
+                    continue
+                m = rows[0]
+                disputed = "disput" in (m.uma_resolution_status or "").lower()
+                clean = m.outcome_prices and sorted(m.outcome_prices) == ["0", "1"]
+                if not clean or disputed:
+                    mark_signal_resolved(conn, s.market_id, s.horizon, "void", None, None, None, now)
+                    voided += 1
+                    continue
+                rv = 1.0 if m.outcome_prices[0] == "1" else 0.0
+                payoff = rv if s.side == "YES" else (1.0 - rv)
+                pnl = payoff - s.entry_price
+                gap = pnl - s.edge_net  # realized minus predicted (the efficiency tax)
+                mark_signal_resolved(conn, s.market_id, s.horizon, "resolved", rv, pnl, gap, now)
+                resolved += 1
+                pnls.append(pnl)
+                gaps.append(gap)
+    finally:
+        conn.close()
+    msg = f"Resolved {resolved}, void {voided}, still open {still_open}."
+    if pnls:
+        msg += (f" Realized P&L/contract: mean {np.mean(pnls):+.4f}, total {np.sum(pnls):+.3f}; "
+                f"mean realized-minus-predicted {np.mean(gaps):+.4f}.")
+    print(msg)
+    return 0
+
+
 def cmd_fetch_tags(args: argparse.Namespace) -> int:
     db_path = Path(args.db)
     conn = init_db(db_path)
@@ -605,6 +742,18 @@ def main(argv: list[str] | None = None) -> int:
     p_fr.add_argument("--bootstrap", type=int, default=1000)
     p_fr.add_argument("--seed", type=int, default=42)
     p_fr.set_defaults(func=cmd_freeze_rule)
+
+    p_fs = sub.add_parser("forward-scan", help="phase 4: log realizable paper fills for open markets vs the frozen rule")
+    p_fs.add_argument("--db", default="data/markets.db")
+    p_fs.add_argument("--rule", default="reports/frozen_rule_v1.json")
+    p_fs.add_argument("--size", type=float, default=1000.0, help="target paper fill size (shares) for VWAP")
+    p_fs.add_argument("--window-hours", type=float, default=12.0, help="+/- window around T-24h to enter")
+    p_fs.add_argument("--window-hours-7d", type=float, default=24.0, help="+/- window around T-7d to enter")
+    p_fs.set_defaults(func=cmd_forward_scan)
+
+    p_se = sub.add_parser("forward-settle", help="phase 4: settle resolved forward signals (P&L, dispute->void)")
+    p_se.add_argument("--db", default="data/markets.db")
+    p_se.set_defaults(func=cmd_forward_settle)
 
     args = parser.parse_args(argv)
     return args.func(args)
