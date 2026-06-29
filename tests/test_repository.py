@@ -16,6 +16,7 @@ from calibration.storage.repository import (
     markets_missing_created_at,
     markets_missing_history,
     markets_missing_tags,
+    min_tick_per_market,
     set_market_created_at,
     upsert_markets,
     upsert_snapshots,
@@ -232,3 +233,16 @@ def test_set_market_created_at_fills_and_clears_from_missing(conn):
     assert n == 1
     assert markets_missing_created_at(conn) == ["0xb"]
     assert get_market(conn, "0xa").created_at == datetime(2025, 3, 4, tzinfo=timezone.utc)
+
+
+def test_min_tick_per_market_returns_earliest(conn):
+    upsert_markets(conn, [_market("0xa"), _market("0xb")])
+    base = datetime(2025, 1, 10, 12, 0, tzinfo=timezone.utc)
+    insert_price_ticks(conn, [
+        PriceTick("0xa", base + timedelta(hours=2), 0.4),
+        PriceTick("0xa", base, 0.5),  # earliest for 0xa
+        PriceTick("0xb", base + timedelta(days=3), 0.6),
+    ])
+    got = dict(min_tick_per_market(conn))
+    assert got["0xa"] == base.isoformat()
+    assert got["0xb"] == (base + timedelta(days=3)).isoformat()

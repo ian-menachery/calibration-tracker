@@ -264,6 +264,18 @@ def set_market_created_at(
     return len(rows)
 
 
+def min_tick_per_market(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+    """(market_id, earliest tick timestamp ISO) for every market with price history.
+
+    Feeds the tick-coverage data-quality check: a market whose first tick is less
+    than 7 days before its end_date can't have a real T-7d snapshot.
+    """
+    rows = conn.execute(
+        "SELECT market_id, MIN(timestamp) FROM raw_price_history GROUP BY market_id"
+    ).fetchall()
+    return [(r[0], r[1]) for r in rows]
+
+
 def select_snapshot_join(
     conn: sqlite3.Connection, snapshot_type: str
 ) -> list[tuple]:
