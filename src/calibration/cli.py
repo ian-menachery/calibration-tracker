@@ -23,7 +23,7 @@ from calibration.analysis.recalibration import (
 )
 from calibration.analysis.snapshots import extract_snapshots
 from calibration.polymarket.client import GammaClient
-from calibration.polymarket.discovery import discover_markets
+from calibration.polymarket.discovery import discover_markets, fetch_markets_by_ids
 from calibration.polymarket.prices import CLOBClient, fetch_market_history
 from calibration.polymarket.tags import fetch_event_tags
 from calibration.reporting.charts import plot_calibration_curve
@@ -33,9 +33,12 @@ from calibration.storage.repository import (
     init_db,
     insert_market_tags,
     insert_price_ticks,
+    markets_missing_created_at,
     markets_missing_history,
     markets_missing_tags,
     markets_with_history,
+    min_tick_per_market,
+    set_market_created_at,
     upsert_markets,
     upsert_snapshots,
 )
@@ -274,6 +277,67 @@ def cmd_fetch_tags(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_backfill_created(args: argparse.Namespace) -> int:
+    """Backfill markets.created_at from Gamma for rows discovered before the column existed."""
+    db_path = Path(args.db)
+    conn = init_db(db_path)
+    try:
+        ids = markets_missing_created_at(conn)
+        if args.limit is not None:
+            ids = ids[: args.limit]
+        print(f"Backfilling created_at for {len(ids)} markets ...")
+        pairs: list[tuple[str, datetime]] = []
+        seen = 0
+        with GammaClient() as client:
+            for m in fetch_markets_by_ids(client, ids):
+                seen += 1
+                if m.created_at is not None:
+                    pairs.append((m.condition_id, m.created_at))
+                if seen % 500 == 0:
+                    print(f"  [{seen}/{len(ids)}] {len(pairs)} with createdAt")
+        filled = set_market_created_at(conn, pairs)
+        print(f"Done. Filled {filled}; {len(ids) - filled} unresolved (no createdAt or not returned).")
+    finally:
+        conn.close()
+    return 0
+
+
+def cmd_tick_coverage(args: argparse.Namespace) -> int:
+    """Flag markets whose first price tick is < 7d before resolution (no real T-7d snapshot)."""
+    db_path = Path(args.db)
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    conn = init_db(db_path)
+    try:
+        rows = []
+        for mid, min_ts in min_tick_per_market(conn):
+            market = get_market(conn, mid)
+            if market is None or min_ts is None:
+                continue
+            first_tick = datetime.fromisoformat(min_ts)
+            days_history = (market.end_date - first_tick).total_seconds() / 86400.0
+            rows.append({
+                "market_id": mid,
+                "slug": market.slug,
+                "end_date": market.end_date.isoformat(),
+                "first_tick": first_tick.isoformat(),
+                "days_of_history": round(days_history, 3),
+                "has_7d_history": days_history >= 7.0,
+            })
+    finally:
+        conn.close()
+    df = pd.DataFrame(rows)
+    out_csv = out_dir / "flb_tick_coverage.csv"
+    df.to_csv(out_csv, index=False)
+    if not df.empty:
+        n_no7d = int((~df["has_7d_history"]).sum())
+        print(f"{len(df)} markets with price history; {n_no7d} have < 7d of history "
+              f"(no real T-7d snapshot). Wrote {out_csv}")
+    else:
+        print(f"No price history found. Wrote empty {out_csv}")
+    return 0
+
+
 def cmd_extract_snapshots(args: argparse.Namespace) -> int:
     db_path = Path(args.db)
     conn = init_db(db_path)
@@ -355,6 +419,16 @@ def main(argv: list[str] | None = None) -> int:
     p_snap = sub.add_parser("extract-snapshots", help="Stage 3: extract calibration snapshots into price_snapshots")
     p_snap.add_argument("--db", default="data/markets.db")
     p_snap.set_defaults(func=cmd_extract_snapshots)
+
+    p_bc = sub.add_parser("backfill-created", help="v2: backfill markets.created_at from Gamma")
+    p_bc.add_argument("--db", default="data/markets.db")
+    p_bc.add_argument("--limit", type=int, default=None, help="cap markets per run")
+    p_bc.set_defaults(func=cmd_backfill_created)
+
+    p_tc = sub.add_parser("tick-coverage", help="v2: flag markets with < 7d of price history before resolution")
+    p_tc.add_argument("--db", default="data/markets.db")
+    p_tc.add_argument("--out", default="reports", help="output directory for flb_tick_coverage.csv")
+    p_tc.set_defaults(func=cmd_tick_coverage)
 
     p_an = sub.add_parser("analyze", help="Stage 4: bucket markets, compute Brier/log loss, save calibration charts")
     p_an.add_argument("--db", default="data/markets.db")
