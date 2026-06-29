@@ -131,6 +131,46 @@ def recalibration_with_ci(
     return out
 
 
+def predict_band(
+    predicted,
+    outcome,
+    p_grid,
+    n_iter: int = 1000,
+    rng: np.random.Generator | None = None,
+    alpha: float = 0.05,
+) -> dict:
+    """Recalibrated probability q-hat = sigmoid(a+b*logit(p)) on a price grid, with a
+    bootstrap band. Returns {p, q_lo, q_hat, q_hi} (arrays aligned to p_grid).
+
+    q_hat is the full-sample point estimate; q_lo/q_hi are the (alpha/2, 1-alpha/2)
+    quantiles of the recalibrated prob across bootstrap refits. The band feeds
+    conservative Kelly sizing: size a YES off q_lo and a NO off q_hi (the bound that
+    shrinks the edge). Returns nan bands for a degenerate fit.
+    """
+    p = np.asarray(predicted, dtype=float)
+    y = np.asarray(outcome, dtype=float)
+    grid = np.asarray(p_grid, dtype=float)
+    a, b = fit_logit_recalibration(p, y)
+    point = apply_recalibration(grid, a, b) if np.isfinite(b) else np.full_like(grid, _NAN)
+    nan = np.full_like(grid, _NAN)
+    if len(y) < 2 or not np.isfinite(b):
+        return {"p": grid, "q_lo": nan, "q_hat": point, "q_hi": nan}
+    if rng is None:
+        rng = np.random.default_rng()
+    n = len(y)
+    samples = np.empty((n_iter, len(grid)))
+    for i in range(n_iter):
+        idx = rng.integers(0, n, size=n)
+        ai, bi = fit_logit_recalibration(p[idx], y[idx])
+        samples[i] = apply_recalibration(grid, ai, bi)  # nan row if a resample degenerates
+    return {
+        "p": grid,
+        "q_lo": np.nanquantile(samples, alpha / 2, axis=0),
+        "q_hat": point,
+        "q_hi": np.nanquantile(samples, 1.0 - alpha / 2, axis=0),
+    }
+
+
 def recalibration_by_group(
     df: pd.DataFrame,
     group_col: str | None = None,
