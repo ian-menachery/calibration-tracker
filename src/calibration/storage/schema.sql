@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS markets (
     fetched_at       TEXT NOT NULL,    -- ISO 8601 UTC
     yes_token_id     TEXT,             -- CLOB token id for the YES outcome; needed by Stage 2
     gamma_event_id   TEXT,             -- Gamma event id; needed by fetch-tags to look up category tags via /events/{id}
-    created_at       TEXT              -- ISO 8601 UTC; Gamma createdAt. Market origin, for time-to-resolution. Backfilled.
+    created_at       TEXT,             -- ISO 8601 UTC; Gamma createdAt. Market origin, for time-to-resolution. Backfilled.
+    venue            TEXT NOT NULL DEFAULT 'polymarket'  -- 'polymarket' | 'kalshi' (v2 Phase 5 cross-venue)
 );
 
 CREATE TABLE IF NOT EXISTS market_tags (

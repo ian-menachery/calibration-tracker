@@ -31,6 +31,7 @@ class Market:
     yes_token_id: str | None  # nullable for migrated rows pre-backfill; always set after re-discover
     gamma_event_id: str | None  # nullable; populated by re-discover, used by fetch-tags
     created_at: datetime | None = None  # Gamma createdAt; nullable until backfilled (backfill-created)
+    venue: str = "polymarket"  # 'polymarket' | 'kalshi' (Phase 5 cross-venue)
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,8 @@ def init_db(path: str | Path) -> sqlite3.Connection:
         conn.execute("ALTER TABLE markets ADD COLUMN gamma_event_id TEXT")
     if "created_at" not in cols:
         conn.execute("ALTER TABLE markets ADD COLUMN created_at TEXT")
+    if "venue" not in cols:
+        conn.execute("ALTER TABLE markets ADD COLUMN venue TEXT NOT NULL DEFAULT 'polymarket'")
     # Drop the inert training_features table left in local DBs by the rolled-back
     # v2 modeling spike. init_db no longer creates it; this clears stragglers.
     # (Its 2,905 rows are unrelated to the T-7d 2,905-market cohort — coincidence.)
@@ -112,6 +115,7 @@ def upsert_markets(conn: sqlite3.Connection, markets: Iterable[Market]) -> int:
             m.yes_token_id,
             m.gamma_event_id,
             m.created_at.isoformat() if m.created_at else None,
+            m.venue,
         )
         for m in markets
     ]
@@ -120,8 +124,8 @@ def upsert_markets(conn: sqlite3.Connection, markets: Iterable[Market]) -> int:
         INSERT OR REPLACE INTO markets (
             market_id, slug, question, category, market_type, parent_event_id,
             end_date, resolved_outcome, resolved_value, total_volume_usd, fetched_at,
-            yes_token_id, gamma_event_id, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            yes_token_id, gamma_event_id, created_at, venue
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )
@@ -302,7 +306,7 @@ def min_tick_per_market(conn: sqlite3.Connection) -> list[tuple[str, str]]:
 
 
 def select_snapshot_join(
-    conn: sqlite3.Connection, snapshot_type: str
+    conn: sqlite3.Connection, snapshot_type: str, venue: str | None = None
 ) -> list[tuple]:
     """markets x price_snapshots for one snapshot type. Drives Stage 4 analysis.
 
@@ -310,19 +314,21 @@ def select_snapshot_join(
     total_volume_usd, end_date, created_at). Filters out rows missing
     resolved_value defensively (shouldn't happen with our discover filter,
     but the math can't handle NULL outcomes). created_at may be NULL for
-    rows not yet backfilled.
+    rows not yet backfilled. Pass `venue` to restrict to one venue.
     """
-    return conn.execute(
-        """
+    sql = """
         SELECT m.market_id, m.slug, s.price, m.resolved_value,
                m.total_volume_usd, m.end_date, m.created_at
         FROM markets m
         JOIN price_snapshots s ON s.market_id = m.market_id
         WHERE s.snapshot_type = ?
           AND m.resolved_value IS NOT NULL
-        """,
-        (snapshot_type,),
-    ).fetchall()
+    """
+    params: list = [snapshot_type]
+    if venue is not None:
+        sql += " AND m.venue = ?"
+        params.append(venue)
+    return conn.execute(sql, params).fetchall()
 
 
 _SIGNAL_COLS = [f.name for f in fields(ForwardSignal)]

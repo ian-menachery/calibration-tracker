@@ -214,6 +214,12 @@ def test_markets_missing_tags_excludes_already_tagged_markets(conn):
     assert pairs == [("0xb", "evt-2")]
 
 
+def test_venue_defaults_polymarket_and_roundtrips(conn):
+    upsert_markets(conn, [_market("0xp"), _market("0xk", venue="kalshi")])
+    assert get_market(conn, "0xp").venue == "polymarket"  # default
+    assert get_market(conn, "0xk").venue == "kalshi"
+
+
 def test_created_at_roundtrips_through_upsert_and_get(conn):
     created = datetime(2024, 9, 1, 8, 30, 0, tzinfo=timezone.utc)
     m = _market("0xc", created_at=created)
