@@ -8,7 +8,7 @@ The favorite-longshot bias is now **measured**, not just plotted. The recalibrat
 
 - **Phase 3 — sized rule (built).** Edge `e(p)=q̂(p)−p`, fractional-Kelly off the conservative q bound, spread/fee cost model (`analysis/edge.py`, `backtest-rule`, `freeze-rule`). Backtest verdict: gross edge dies between 1–2¢ half-spread; only sports@24h / crypto@7d clear the eligibility gate.
 - **Phase 4 — forward test (built, accruing).** Pre-registered frozen rule + live-book realizable paper fills (`forward_signals`, `forward-scan`/`forward-settle`). Tracks realized-minus-predicted edge. P&L accrues on the calendar; **paper only, no live capital.**
-- **Phase 5 — Kalshi cross-venue (built).** `venue` column + `kalshi/` module + `cross-venue`. Finding: Polymarket's sports FLB does **not** replicate on Kalshi (b≈1.0), pointing to a venue/population-specific effect.
+- **Phase 5 — Kalshi cross-venue (built).** `venue` column + `kalshi/` module + `cross-venue`. Finding: Polymarket's sports FLB (b=0.834 [0.729,0.941] @24h) does **not** replicate on Kalshi (b=0.962 [0.824,1.099], n=2,262 — CI includes 1), pointing to a venue/population-specific effect. **Deferred follow-up:** a matched **politics/geopolitics** cross-venue sweep — Kalshi fragments these into ~2,052 Politics / 151 World single-question series, so it needs category-based discovery (iterate series within a Kalshi category) rather than per-series enumeration.
 
 ## Other possible future work
 
