@@ -134,11 +134,13 @@ calibration-tracker/
 │   ├── storage/
 │   │   ├── schema.sql        # CREATE TABLE statements
 │   │   └── repository.py     # read/write helpers, no business logic
+│   ├── kalshi/               # v2 Phase 5: Kalshi venue (httpx here too) — client, discovery, candles
 │   ├── analysis/
 │   │   ├── snapshots.py      # Stage 3
 │   │   ├── calibration.py    # bucketing, realized rates
 │   │   ├── metrics.py        # Brier, log loss, bootstraps
-│   │   └── recalibration.py  # v2: logit recalibration fit (FLB), see §14
+│   │   ├── recalibration.py  # v2: logit recalibration fit (FLB), see §14
+│   │   └── edge.py           # v2 Phase 3: edge / Kelly / cost / VWAP sizing, see §14
 │   ├── reporting/
 │   │   └── charts.py         # matplotlib chart functions
 │   └── cli.py                # one entry point per stage
@@ -157,7 +159,14 @@ calibration extract-snapshots
 calibration analyze
 calibration backfill-created      # v2: backfill markets.created_at from Gamma (§14)
 calibration tick-coverage         # v2: flag markets with <7d of history before resolution (§14)
-calibration flb                   # v2: favorite-longshot recalibration fit (§14)
+calibration flb [--venue V]       # v2: favorite-longshot recalibration fit (§14)
+calibration backtest-rule         # v2 Phase 3: OOS rule backtest over a spread sweep (§14)
+calibration freeze-rule           # v2 Phase 3: write frozen_rule_v1.json + flb_map.csv (§14)
+calibration forward-scan          # v2 Phase 4: log realizable paper fills vs the frozen rule (§14)
+calibration forward-settle        # v2 Phase 4: settle resolved signals; P&L + dispute->void (§14)
+calibration kalshi-discover       # v2 Phase 5: settled binary Kalshi markets by series (§14)
+calibration kalshi-fetch-candles  # v2 Phase 5: Kalshi candlesticks -> price history (§14)
+calibration cross-venue           # v2 Phase 5: FLB across venues on matched categories (§14)
 ```
 
 (A `fetch-tags` stage was added during implementation to pull per-market category tags from Gamma's `/events/{id}` endpoint into a `market_tags` table; this isn't in the original data model above but is part of the shipped pipeline. The originally-planned `report` stage was folded into `analyze` — see §5. The `backfill-created` / `tick-coverage` / `flb` stages are the v2 favorite-longshot extension — see §14.)
@@ -271,4 +280,16 @@ v1/v1.1 answered *"is Polymarket calibrated?"* with reliability diagrams and Bri
 
 **Stack:** unchanged from §6 — numpy/pandas only, no sklearn/scipy. (The only new dependency contemplated for later phases is the Anthropic SDK, and only if category labelling ever needs an LLM fallback; the current rule-based tag mapping covers ~98% of markets, so it is not used.)
 
-**Deferred (designed, not built):** Phase 3 expresses the map as an edge function `e(p)=q̂(p)−p` with fractional-Kelly sizing and a spread/fee cost model; Phase 4 pre-registers the frozen map and forward-tests it on new markets. Both remain out of scope until explicitly requested.
+### Phases 3–5 (built): sized rule, forward test, cross-venue
+
+The gate (b<1, CI excludes 1, persistent, but ~zero out-of-sample Brier gain and sports-concentrated) cleared, so the rule + forward test were built — as **measurement, never live capital**.
+
+**Phase 3 — sized rule (`analysis/edge.py`).** Edge `e(p)=q̂(p)−p` (back the favorite when e>0, fade the longshot when e<0); binary Kelly `(q−p)/(1−p)` YES / `(p−q)/p` NO, fractional (¼) and sized off the **conservative** q bound (`q_lo` for YES, `q_hi` for NO) from `recalibration.predict_band`; net edge = gross − half-spread − fee (held to resolution ⇒ no exit cost). `backtest-rule` validates out-of-sample over a half-spread sweep and applies only the **per-category** map where the b-CI sits below 1; on current data gross edge **dies between 1¢ and 2¢ half-spread**. `freeze-rule` writes the pre-registration `reports/frozen_rule_v1.json` (per-category a,b on all resolved markets + a precomputed q-band) and the PMRA interface export `reports/flb_map.csv`.
+
+**Phase 4 — forward test (`forward_signals` table).** `forward-scan` loads the **frozen** rule, finds open standalone-binary markets in the T-24h/7d entry window with an eligible category, fetches the **live CLOB order book**, and logs a realizable (VWAP, spread-crossed) paper fill when net edge is positive — idempotent per (market, horizon), no fitting on forward data. `forward-settle` resolves signals once closed, recording held-to-resolution P&L and **realized-minus-predicted edge** (the efficiency tax), and voids disputed (`umaResolutionStatus`) resolutions. It accrues on the calendar; run `forward-scan` on a cadence.
+
+**Phase 5 — Kalshi cross-venue (`venue` column + `kalshi/` module).** `markets` gains a `venue` column; the recalibration math is unchanged (venue-neutral). The `kalshi/` module (httpx confined there, **no signing / no `cryptography`** — public reads) discovers settled binaries **per series** (the raw feed is ~99% MVE parlays; the series prefix is the clean category key) and fetches candlesticks into the same `PriceTick`/snapshot shape. `cross-venue` compares FLB on **matched categories** (present on both venues), surfacing the population-mismatch caveat. Finding: Polymarket's sports FLB (b≈0.83 at 24h) does **not** replicate on Kalshi (b≈1.0, small n) — consistent with a venue/population-specific effect, not a universal one. Rule commands (`backtest-rule`/`freeze-rule`) are scoped to `--venue` (default polymarket) so venues never pool.
+
+**Interface to PMRA:** `reports/flb_map.csv` (horizon, category → a, b) is the consumable artifact. PMRA today recalibrates its *model* probability (temperature scaling), not the *market* price, so consuming this map means adding a market-price benchmark concept **in PMRA**. Projects stay separate; this repo only emits the CSV.
+
+**Still deferred:** live trading of the rule (real capital), and the v2 ML "predict miscalibration" model in ROADMAP.md.
