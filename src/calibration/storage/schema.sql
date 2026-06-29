@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS markets (
     total_volume_usd REAL,
     fetched_at       TEXT NOT NULL,    -- ISO 8601 UTC
     yes_token_id     TEXT,             -- CLOB token id for the YES outcome; needed by Stage 2
-    gamma_event_id   TEXT              -- Gamma event id; needed by fetch-tags to look up category tags via /events/{id}
+    gamma_event_id   TEXT,             -- Gamma event id; needed by fetch-tags to look up category tags via /events/{id}
+    created_at       TEXT              -- ISO 8601 UTC; Gamma createdAt. Market origin, for time-to-resolution. Backfilled.
 );
 
 CREATE TABLE IF NOT EXISTS market_tags (

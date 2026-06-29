@@ -13,8 +13,10 @@ from calibration.storage.repository import (
     init_db,
     insert_market_tags,
     insert_price_ticks,
+    markets_missing_created_at,
     markets_missing_history,
     markets_missing_tags,
+    set_market_created_at,
     upsert_markets,
     upsert_snapshots,
 )
@@ -205,3 +207,28 @@ def test_markets_missing_tags_excludes_already_tagged_markets(conn):
     insert_market_tags(conn, [("0xa", "sports")])
     pairs = markets_missing_tags(conn)
     assert pairs == [("0xb", "evt-2")]
+
+
+def test_created_at_roundtrips_through_upsert_and_get(conn):
+    created = datetime(2024, 9, 1, 8, 30, 0, tzinfo=timezone.utc)
+    m = _market("0xc", created_at=created)
+    upsert_markets(conn, [m])
+    got = get_market(conn, "0xc")
+    assert got.created_at == created
+
+
+def test_markets_missing_created_at_lists_only_null_rows(conn):
+    upsert_markets(conn, [
+        _market("0xa"),  # created_at defaults to None
+        _market("0xb", created_at=datetime(2024, 1, 1, tzinfo=timezone.utc)),
+    ])
+    assert markets_missing_created_at(conn) == ["0xa"]
+
+
+def test_set_market_created_at_fills_and_clears_from_missing(conn):
+    upsert_markets(conn, [_market("0xa"), _market("0xb")])
+    assert set(markets_missing_created_at(conn)) == {"0xa", "0xb"}
+    n = set_market_created_at(conn, [("0xa", datetime(2025, 3, 4, tzinfo=timezone.utc))])
+    assert n == 1
+    assert markets_missing_created_at(conn) == ["0xb"]
+    assert get_market(conn, "0xa").created_at == datetime(2025, 3, 4, tzinfo=timezone.utc)

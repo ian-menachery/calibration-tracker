@@ -30,6 +30,7 @@ class Market:
     fetched_at: datetime
     yes_token_id: str | None  # nullable for migrated rows pre-backfill; always set after re-discover
     gamma_event_id: str | None  # nullable; populated by re-discover, used by fetch-tags
+    created_at: datetime | None = None  # Gamma createdAt; nullable until backfilled (backfill-created)
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,8 @@ def init_db(path: str | Path) -> sqlite3.Connection:
         conn.execute("ALTER TABLE markets ADD COLUMN yes_token_id TEXT")
     if "gamma_event_id" not in cols:
         conn.execute("ALTER TABLE markets ADD COLUMN gamma_event_id TEXT")
+    if "created_at" not in cols:
+        conn.execute("ALTER TABLE markets ADD COLUMN created_at TEXT")
     # Drop the inert training_features table left in local DBs by the rolled-back
     # v2 modeling spike. init_db no longer creates it; this clears stragglers.
     # (Its 2,905 rows are unrelated to the T-7d 2,905-market cohort — coincidence.)
@@ -83,6 +86,7 @@ def upsert_markets(conn: sqlite3.Connection, markets: Iterable[Market]) -> int:
             m.fetched_at.isoformat(),
             m.yes_token_id,
             m.gamma_event_id,
+            m.created_at.isoformat() if m.created_at else None,
         )
         for m in markets
     ]
@@ -91,8 +95,8 @@ def upsert_markets(conn: sqlite3.Connection, markets: Iterable[Market]) -> int:
         INSERT OR REPLACE INTO markets (
             market_id, slug, question, category, market_type, parent_event_id,
             end_date, resolved_outcome, resolved_value, total_volume_usd, fetched_at,
-            yes_token_id, gamma_event_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            yes_token_id, gamma_event_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )
@@ -115,6 +119,9 @@ def get_market(conn: sqlite3.Connection, market_id: str) -> Market | None:
     data = dict(zip(cols, row))
     data["end_date"] = datetime.fromisoformat(data["end_date"])
     data["fetched_at"] = datetime.fromisoformat(data["fetched_at"])
+    data["created_at"] = (
+        datetime.fromisoformat(data["created_at"]) if data["created_at"] else None
+    )
     return Market(**data)
 
 
@@ -234,6 +241,27 @@ def markets_missing_tags(conn: sqlite3.Connection) -> list[tuple[str, str]]:
         """
     ).fetchall()
     return [(r[0], r[1]) for r in rows]
+
+
+def markets_missing_created_at(conn: sqlite3.Connection) -> list[str]:
+    """Market IDs with no created_at yet (rows discovered before the column existed).
+
+    Drives backfill-created resumability — re-running only fetches the stragglers.
+    """
+    rows = conn.execute(
+        "SELECT market_id FROM markets WHERE created_at IS NULL"
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def set_market_created_at(
+    conn: sqlite3.Connection, pairs: Iterable[tuple[str, datetime]]
+) -> int:
+    """Set created_at for the given (market_id, datetime) pairs. Datetime -> ISO at the boundary."""
+    rows = [(dt.isoformat(), mid) for mid, dt in pairs]
+    conn.executemany("UPDATE markets SET created_at = ? WHERE market_id = ?", rows)
+    conn.commit()
+    return len(rows)
 
 
 def select_snapshot_join(
