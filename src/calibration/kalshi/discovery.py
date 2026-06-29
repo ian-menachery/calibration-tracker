@@ -24,6 +24,10 @@ KALSHI_SERIES: dict[str, str] = {
     "KXBTC": "crypto", "KXBTCD": "crypto", "KXETH": "crypto", "KXETHD": "crypto",
     "KXNBA": "sports", "KXNFL": "sports", "KXNHL": "sports", "KXMLB": "sports",
     "KXNBAGAME": "sports", "KXNFLGAME": "sports",
+    # High-yield game series added to tighten the cross-venue sports estimate (slow enough
+    # to carry a T-24h snapshot): MLB/WTA/ATP/NHL games. See ROADMAP for the deferred
+    # politics/geopolitics matched sweep (Kalshi fragments those into thousands of series).
+    "KXMLBGAME": "sports", "KXWTAMATCH": "sports", "KXATPMATCH": "sports", "KXNHLGAME": "sports",
     "KXFED": "other", "KXHIGHNY": "other",
 }
 
