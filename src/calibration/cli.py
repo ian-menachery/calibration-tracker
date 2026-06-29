@@ -186,9 +186,15 @@ def cmd_flb(args: argparse.Namespace) -> int:
             rows.append(_tagged("overall", df, None))
 
             df = df.copy()
-            df["volume_quartile"] = pd.qcut(
-                df["volume"], q=4, labels=["q1", "q2", "q3", "q4"], duplicates="drop"
-            )
+            # labels=False + duplicates='drop' tolerates lumpy volume (e.g. Kalshi's many
+            # zero/duplicate volumes) that can't form 4 distinct quartiles.
+            try:
+                codes = pd.qcut(df["volume"], q=4, labels=False, duplicates="drop")
+                df["volume_quartile"] = codes.map(
+                    lambda i: f"q{int(i) + 1}" if pd.notna(i) else "na"
+                ).astype(str)
+            except ValueError:
+                df["volume_quartile"] = "all"  # too few distinct volumes to quartile
             rows.append(_tagged("volume", df, "volume_quartile"))
 
             df["era"] = _era(df["end_date"])
