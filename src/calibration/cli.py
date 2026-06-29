@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,7 +17,10 @@ from calibration.analysis.calibration import (
     compute_metrics,
     load_calibration_frame,
 )
+from calibration.analysis.edge import simulate_position
 from calibration.analysis.recalibration import (
+    apply_recalibration,
+    predict_band,
     recalibrated_brier,
     recalibration_by_group,
     recalibration_with_ci,
@@ -262,6 +266,130 @@ def cmd_flb(args: argparse.Namespace) -> int:
     return 0
 
 
+RULE_HORIZONS = ("24h", "7d")  # 24h primary (both tails populated), 7d secondary
+
+
+def _eligible_categories(fit: pd.DataFrame, min_n: int) -> dict[str, tuple[float, float]]:
+    """From a per-category recalibration_by_group result, keep categories with a real FLB:
+    b CI strictly below 1 and enough markets. Returns {category: (a, b)}."""
+    out: dict[str, tuple[float, float]] = {}
+    for _, r in fit.iterrows():
+        if r["n"] >= min_n and r["b_ci_hi"] < 1.0:
+            out[r["subgroup"]] = (float(r["a"]), float(r["b"]))
+    return out
+
+
+def cmd_backtest_rule(args: argparse.Namespace) -> int:
+    """Validate the sized rule out-of-sample: fit the per-category map on older markets,
+    apply to newer ones, and report realized P&L across a half-spread sweep."""
+    db_path = Path(args.db)
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    spreads = [float(s) for s in args.spreads.split(",")]
+    rows: list[dict] = []
+    conn = init_db(db_path)
+    try:
+        for horizon in RULE_HORIZONS:
+            df = load_calibration_frame(conn, horizon)
+            df = df[df["volume"] >= args.min_volume]  # universe filter (binary/non-disputed already)
+            if len(df) < 2 * args.min_n:
+                print(f"[{horizon}] too few markets after universe filter; skipping")
+                continue
+            ordered = df["end_date"].sort_values().to_numpy()
+            cutoff = ordered[len(ordered) // 2]
+            train = df[df["end_date"] < cutoff]
+            test = df[df["end_date"] >= cutoff]
+            fit = recalibration_by_group(train, "category", n_iter=args.bootstrap,
+                                         rng=np.random.default_rng(args.seed))
+            eligible = _eligible_categories(fit, args.min_n)
+            print(f"[{horizon}] eligible categories (train, b CI<1): {sorted(eligible)}")
+
+            positions: list[dict] = []
+            for _, m in test.iterrows():
+                ab = eligible.get(m["category"])
+                if ab is None:
+                    continue
+                q_hat = float(apply_recalibration(m["predicted"], ab[0], ab[1]))
+                for hs in spreads:
+                    res = simulate_position(m["predicted"], q_hat, m["outcome"], half_spread=hs)
+                    if res is None:
+                        continue
+                    side, pred_edge, pnl = res
+                    positions.append({"category": m["category"], "half_spread": hs,
+                                      "side": side, "pred_edge": pred_edge, "pnl": pnl})
+            if not positions:
+                print(f"[{horizon}] no positions taken")
+                continue
+            pos = pd.DataFrame(positions)
+            for hs in spreads:
+                sub = pos[pos["half_spread"] == hs]
+                rows.append({"horizon": horizon, "scope": "overall", "half_spread": hs,
+                             "n_positions": len(sub), "mean_pred_edge": sub["pred_edge"].mean(),
+                             "mean_realized_pnl": sub["pnl"].mean(), "total_realized_pnl": sub["pnl"].sum(),
+                             "win_rate": (sub["pnl"] > 0).mean()})
+            hs0 = pos[pos["half_spread"] == spreads[0]]
+            print(f"[{horizon}] at half_spread={spreads[0]:.3f}: {len(hs0)} positions, "
+                  f"mean realized P&L={hs0['pnl'].mean():+.4f}/contract, "
+                  f"mean predicted edge={hs0['pred_edge'].mean():+.4f}")
+    finally:
+        conn.close()
+    if not rows:
+        print("No backtest rows; nothing written.")
+        return 0
+    pd.DataFrame(rows).to_csv(out_dir / "flb_rule_backtest.csv", index=False)
+    print(f"Wrote rule backtest to {out_dir / 'flb_rule_backtest.csv'}")
+    return 0
+
+
+def cmd_freeze_rule(args: argparse.Namespace) -> int:
+    """Freeze the pre-registration rule: per-category (a,b) fit on ALL resolved markets
+    plus a precomputed q-band, so the forward test can size without refitting."""
+    db_path = Path(args.db)
+    out_path = Path(args.out)
+    grid = [round(x, 2) for x in np.arange(0.01, 1.0, 0.01)]
+    frozen = {
+        "version": 1,
+        "entry_horizon": "24h",
+        "secondary_horizon": "7d",
+        "kelly_fraction": args.kelly_fraction,
+        "universe": {"market_type": "binary", "min_volume": args.min_volume, "non_disputed": True},
+        "seed": args.seed,
+        "min_n": args.min_n,
+        "horizons": {},
+    }
+    conn = init_db(db_path)
+    try:
+        for horizon in RULE_HORIZONS:
+            df = load_calibration_frame(conn, horizon)
+            df = df[df["volume"] >= args.min_volume]
+            fit = recalibration_by_group(df, "category", n_iter=args.bootstrap,
+                                         rng=np.random.default_rng(args.seed))
+            eligible = _eligible_categories(fit, args.min_n)
+            cats: dict[str, dict] = {}
+            for _, r in fit.iterrows():
+                cat = r["subgroup"]
+                entry = {"a": float(r["a"]), "b": float(r["b"]),
+                         "b_ci_lo": float(r["b_ci_lo"]), "b_ci_hi": float(r["b_ci_hi"]),
+                         "n": int(r["n"]), "eligible": cat in eligible}
+                if cat in eligible:
+                    g = df[df["category"] == cat]
+                    band = predict_band(g["predicted"].to_numpy(), g["outcome"].to_numpy(),
+                                        grid, n_iter=args.bootstrap, rng=np.random.default_rng(args.seed))
+                    entry["grid"] = grid
+                    entry["q_lo"] = [float(x) for x in band["q_lo"]]
+                    entry["q_hat"] = [float(x) for x in band["q_hat"]]
+                    entry["q_hi"] = [float(x) for x in band["q_hi"]]
+                cats[cat] = entry
+            frozen["horizons"][horizon] = {"fit_on": "all_resolved", "categories": cats}
+    finally:
+        conn.close()
+    out_path.write_text(json.dumps(frozen, indent=2))
+    elig = {h: sorted(c for c, v in frozen["horizons"][h]["categories"].items() if v["eligible"])
+            for h in frozen["horizons"]}
+    print(f"Froze rule to {out_path}. Eligible categories: {elig}")
+    return 0
+
+
 def cmd_fetch_tags(args: argparse.Namespace) -> int:
     db_path = Path(args.db)
     conn = init_db(db_path)
@@ -457,6 +585,26 @@ def main(argv: list[str] | None = None) -> int:
     p_flb.add_argument("--cutoff", default=None,
                        help="ISO end_date splitting train/test for the temporal slice (default: median)")
     p_flb.set_defaults(func=cmd_flb)
+
+    p_bt = sub.add_parser("backtest-rule", help="phase 3: OOS backtest of the sized rule over a spread sweep")
+    p_bt.add_argument("--db", default="data/markets.db")
+    p_bt.add_argument("--out", default="reports")
+    p_bt.add_argument("--min-volume", type=float, default=1_000_000.0)
+    p_bt.add_argument("--min-n", type=int, default=100, help="min markets for a category to be eligible")
+    p_bt.add_argument("--spreads", default="0,0.01,0.02,0.03", help="comma-separated half-spreads to sweep")
+    p_bt.add_argument("--bootstrap", type=int, default=1000)
+    p_bt.add_argument("--seed", type=int, default=42)
+    p_bt.set_defaults(func=cmd_backtest_rule)
+
+    p_fr = sub.add_parser("freeze-rule", help="phase 3: write the pre-registration frozen_rule_v1.json")
+    p_fr.add_argument("--db", default="data/markets.db")
+    p_fr.add_argument("--out", default="reports/frozen_rule_v1.json")
+    p_fr.add_argument("--min-volume", type=float, default=1_000_000.0)
+    p_fr.add_argument("--min-n", type=int, default=100)
+    p_fr.add_argument("--kelly-fraction", type=float, default=0.25)
+    p_fr.add_argument("--bootstrap", type=int, default=1000)
+    p_fr.add_argument("--seed", type=int, default=42)
+    p_fr.set_defaults(func=cmd_freeze_rule)
 
     args = parser.parse_args(argv)
     return args.func(args)
