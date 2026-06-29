@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from calibration.storage.repository import (
+    ForwardSignal,
     Market,
     PriceTick,
     Snapshot,
@@ -13,10 +14,13 @@ from calibration.storage.repository import (
     init_db,
     insert_market_tags,
     insert_price_ticks,
+    insert_signals,
+    mark_signal_resolved,
     markets_missing_created_at,
     markets_missing_history,
     markets_missing_tags,
     min_tick_per_market,
+    open_signals,
     set_market_created_at,
     upsert_markets,
     upsert_snapshots,
@@ -233,6 +237,42 @@ def test_set_market_created_at_fills_and_clears_from_missing(conn):
     assert n == 1
     assert markets_missing_created_at(conn) == ["0xb"]
     assert get_market(conn, "0xa").created_at == datetime(2025, 3, 4, tzinfo=timezone.utc)
+
+
+def _signal(market_id="0xs", horizon="24h", **overrides):
+    base = dict(
+        market_id=market_id, venue="polymarket", horizon=horizon,
+        observed_at=datetime(2026, 6, 1, tzinfo=timezone.utc), category="sports",
+        market_price=0.92, side="YES", q_hat=0.95, q_used=0.93, edge_gross=0.03,
+        half_spread=0.01, fee=0.0, edge_net=0.02, stake_fraction=0.05, entry_price=0.93,
+        end_date=datetime(2026, 6, 5, tzinfo=timezone.utc),
+    )
+    base.update(overrides)
+    return ForwardSignal(**base)
+
+
+def test_forward_signals_insert_and_open_roundtrip(conn):
+    insert_signals(conn, [_signal("0xa"), _signal("0xb", horizon="7d")])
+    got = open_signals(conn)
+    assert len(got) == 2
+    assert {s.market_id for s in got} == {"0xa", "0xb"}
+    a = next(s for s in got if s.market_id == "0xa")
+    assert a.side == "YES" and a.entry_price == 0.93 and a.status == "open"
+
+
+def test_forward_signals_insert_is_ignore_on_pk(conn):
+    insert_signals(conn, [_signal("0xa", entry_price=0.93)])
+    insert_signals(conn, [_signal("0xa", entry_price=0.99)])  # same (market,horizon) -> ignored
+    got = open_signals(conn)
+    assert len(got) == 1 and got[0].entry_price == 0.93  # original entry locked
+
+
+def test_mark_signal_resolved_clears_from_open(conn):
+    insert_signals(conn, [_signal("0xa")])
+    mark_signal_resolved(conn, "0xa", "24h", status="resolved", resolved_value=1.0,
+                         pnl=0.07, realized_minus_predicted=-0.01,
+                         settled_at=datetime(2026, 6, 6, tzinfo=timezone.utc))
+    assert open_signals(conn) == []
 
 
 def test_min_tick_per_market_returns_earliest(conn):

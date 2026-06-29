@@ -48,6 +48,31 @@ class Snapshot:
     observed_at: datetime
 
 
+@dataclass(frozen=True)
+class ForwardSignal:
+    market_id: str
+    venue: str
+    horizon: str
+    observed_at: datetime
+    category: str | None
+    market_price: float
+    side: str
+    q_hat: float
+    q_used: float
+    edge_gross: float
+    half_spread: float
+    fee: float
+    edge_net: float
+    stake_fraction: float
+    entry_price: float
+    end_date: datetime
+    status: str = "open"
+    resolved_value: float | None = None
+    pnl: float | None = None
+    realized_minus_predicted: float | None = None
+    settled_at: datetime | None = None
+
+
 def init_db(path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.execute("PRAGMA foreign_keys = ON")
@@ -298,3 +323,65 @@ def select_snapshot_join(
         """,
         (snapshot_type,),
     ).fetchall()
+
+
+_SIGNAL_COLS = [f.name for f in fields(ForwardSignal)]
+_SIGNAL_DT = {"observed_at", "end_date", "settled_at"}
+
+
+def insert_signals(conn: sqlite3.Connection, signals: Iterable[ForwardSignal]) -> int:
+    """INSERT OR IGNORE forward signals keyed by (market_id, horizon) so re-scanning a
+    market doesn't overwrite its locked entry price."""
+    rows = []
+    for s in signals:
+        vals = []
+        for name in _SIGNAL_COLS:
+            v = getattr(s, name)
+            vals.append(v.isoformat() if isinstance(v, datetime) else v)
+        rows.append(tuple(vals))
+    placeholders = ", ".join("?" * len(_SIGNAL_COLS))
+    conn.executemany(
+        f"INSERT OR IGNORE INTO forward_signals ({', '.join(_SIGNAL_COLS)}) VALUES ({placeholders})",
+        rows,
+    )
+    conn.commit()
+    return len(rows)
+
+
+def _row_to_signal(row: tuple) -> ForwardSignal:
+    data = dict(zip(_SIGNAL_COLS, row))
+    for k in _SIGNAL_DT:
+        data[k] = datetime.fromisoformat(data[k]) if data[k] else None
+    return ForwardSignal(**data)
+
+
+def open_signals(conn: sqlite3.Connection) -> list[ForwardSignal]:
+    """All forward signals still awaiting resolution (status='open')."""
+    rows = conn.execute(
+        f"SELECT {', '.join(_SIGNAL_COLS)} FROM forward_signals WHERE status = 'open'"
+    ).fetchall()
+    return [_row_to_signal(r) for r in rows]
+
+
+def mark_signal_resolved(
+    conn: sqlite3.Connection,
+    market_id: str,
+    horizon: str,
+    status: str,
+    resolved_value: float | None,
+    pnl: float | None,
+    realized_minus_predicted: float | None,
+    settled_at: datetime,
+) -> None:
+    """Settle a forward signal: record status ('resolved'/'void'), outcome, P&L, and the
+    realized-minus-predicted edge gap."""
+    conn.execute(
+        """
+        UPDATE forward_signals
+        SET status = ?, resolved_value = ?, pnl = ?, realized_minus_predicted = ?, settled_at = ?
+        WHERE market_id = ? AND horizon = ?
+        """,
+        (status, resolved_value, pnl, realized_minus_predicted, settled_at.isoformat(),
+         market_id, horizon),
+    )
+    conn.commit()
