@@ -59,6 +59,10 @@ def init_db(path: str | Path) -> sqlite3.Connection:
         conn.execute("ALTER TABLE markets ADD COLUMN yes_token_id TEXT")
     if "gamma_event_id" not in cols:
         conn.execute("ALTER TABLE markets ADD COLUMN gamma_event_id TEXT")
+    # Drop the inert training_features table left in local DBs by the rolled-back
+    # v2 modeling spike. init_db no longer creates it; this clears stragglers.
+    # (Its 2,905 rows are unrelated to the T-7d 2,905-market cohort — coincidence.)
+    conn.execute("DROP TABLE IF EXISTS training_features")
     conn.commit()
     return conn
 
