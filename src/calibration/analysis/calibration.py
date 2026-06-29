@@ -150,7 +150,7 @@ def load_calibration_frame(
     rows = select_snapshot_join(conn, snapshot_type)
     df = pd.DataFrame(
         rows,
-        columns=["market_id", "slug", "predicted", "outcome", "volume", "end_date"],
+        columns=["market_id", "slug", "predicted", "outcome", "volume", "end_date", "created_at"],
     )
     if df.empty:
         df["category"] = pd.Series(dtype=str)
