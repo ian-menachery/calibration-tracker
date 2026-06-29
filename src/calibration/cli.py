@@ -171,7 +171,7 @@ def cmd_flb(args: argparse.Namespace) -> int:
     conn = init_db(db_path)
     try:
         for snap in SNAPSHOT_TYPES:
-            df = load_calibration_frame(conn, snap)
+            df = load_calibration_frame(conn, snap, venue=args.venue)
             if df.empty:
                 print(f"[{snap}] no rows; skipping")
                 continue
@@ -266,7 +266,9 @@ def cmd_flb(args: argparse.Namespace) -> int:
         print("No data; nothing written.")
         return 0
     result = pd.concat(rows, ignore_index=True)
-    out_csv = out_dir / "flb_recalibration.csv"
+    result.insert(0, "venue", args.venue or "all")
+    suffix = f"_{args.venue}" if args.venue else ""
+    out_csv = out_dir / f"flb_recalibration{suffix}.csv"
     result.to_csv(out_csv, index=False)
 
     # Headline: overall b at the full-coverage horizons.
@@ -375,6 +377,7 @@ def cmd_freeze_rule(args: argparse.Namespace) -> int:
         "min_n": args.min_n,
         "horizons": {},
     }
+    map_rows: list[dict] = []
     conn = init_db(db_path)
     try:
         for horizon in RULE_HORIZONS:
@@ -385,6 +388,10 @@ def cmd_freeze_rule(args: argparse.Namespace) -> int:
             eligible = _eligible_categories(fit, args.min_n)
             cats: dict[str, dict] = {}
             for _, r in fit.iterrows():
+                map_rows.append({"horizon": horizon, "category": r["subgroup"], "a": float(r["a"]),
+                                 "b": float(r["b"]), "b_ci_lo": float(r["b_ci_lo"]),
+                                 "b_ci_hi": float(r["b_ci_hi"]), "n": int(r["n"]),
+                                 "eligible": r["subgroup"] in eligible})
                 cat = r["subgroup"]
                 entry = {"a": float(r["a"]), "b": float(r["b"]),
                          "b_ci_lo": float(r["b_ci_lo"]), "b_ci_hi": float(r["b_ci_hi"]),
@@ -402,9 +409,57 @@ def cmd_freeze_rule(args: argparse.Namespace) -> int:
     finally:
         conn.close()
     out_path.write_text(json.dumps(frozen, indent=2))
+    # Interface export for PMRA: a flat (horizon, category -> a, b) view of the map.
+    map_csv = out_path.parent / "flb_map.csv"
+    pd.DataFrame(map_rows).to_csv(map_csv, index=False)
     elig = {h: sorted(c for c, v in frozen["horizons"][h]["categories"].items() if v["eligible"])
             for h in frozen["horizons"]}
-    print(f"Froze rule to {out_path}. Eligible categories: {elig}")
+    print(f"Froze rule to {out_path} (+ {map_csv}). Eligible categories: {elig}")
+    return 0
+
+
+def cmd_cross_venue(args: argparse.Namespace) -> int:
+    """Compare FLB across venues on MATCHED categories (present on both), holding the
+    category constant. Not pooled, and still population-confounded -- surfaced below."""
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    venues = ["polymarket", "kalshi"]
+    rows: list[dict] = []
+    conn = init_db(Path(args.db))
+    try:
+        for horizon in SNAPSHOT_TYPES:
+            per_venue: dict[str, dict] = {}
+            for v in venues:
+                df = load_calibration_frame(conn, horizon, venue=v)
+                if df.empty:
+                    continue
+                fit = recalibration_by_group(df, "category", n_iter=args.bootstrap,
+                                             rng=np.random.default_rng(args.seed))
+                per_venue[v] = {r["subgroup"]: r for _, r in fit.iterrows()}
+            if len(per_venue) < 2:
+                continue
+            matched = set(per_venue[venues[0]]) & set(per_venue[venues[1]])
+            for cat in sorted(matched):
+                for v in venues:
+                    r = per_venue[v][cat]
+                    rows.append({"horizon": horizon, "category": cat, "venue": v, "n": int(r["n"]),
+                                 "b": r["b"], "b_ci_lo": r["b_ci_lo"], "b_ci_hi": r["b_ci_hi"],
+                                 "brier_market": r["brier_market"]})
+    finally:
+        conn.close()
+    if not rows:
+        print("No matched categories across venues (need Kalshi data with resolved snapshots).")
+        return 0
+    res = pd.DataFrame(rows)
+    res.to_csv(out_dir / "flb_cross_venue.csv", index=False)
+    print("=== cross-venue FLB on matched categories (b<1 = favorite-longshot bias) ===")
+    for (h, cat), g in res.groupby(["horizon", "category"]):
+        parts = "   ".join(f"{r.venue}: b={r.b:.3f} [{r.b_ci_lo:.3f},{r.b_ci_hi:.3f}] n={r.n}"
+                           for r in g.itertuples())
+        print(f"  T-{h:<5} {cat:<12} {parts}")
+    print("CAVEAT: venues differ in user base and market mix; even matched-category comparison "
+          "conflates population differences -- not a controlled experiment.")
+    print(f"Wrote {out_dir / 'flb_cross_venue.csv'}")
     return 0
 
 
@@ -761,6 +816,13 @@ def main(argv: list[str] | None = None) -> int:
     p_kc.add_argument("--limit", type=int, default=None, help="cap markets per run")
     p_kc.set_defaults(func=cmd_kalshi_fetch_candles)
 
+    p_cv = sub.add_parser("cross-venue", help="phase 5: compare FLB across venues on matched categories")
+    p_cv.add_argument("--db", default="data/markets.db")
+    p_cv.add_argument("--out", default="reports")
+    p_cv.add_argument("--bootstrap", type=int, default=1000)
+    p_cv.add_argument("--seed", type=int, default=42)
+    p_cv.set_defaults(func=cmd_cross_venue)
+
     p_bc = sub.add_parser("backfill-created", help="v2: backfill markets.created_at from Gamma")
     p_bc.add_argument("--db", default="data/markets.db")
     p_bc.add_argument("--limit", type=int, default=None, help="cap markets per run")
@@ -785,6 +847,7 @@ def main(argv: list[str] | None = None) -> int:
     p_flb.add_argument("--seed", type=int, default=42, help="rng seed for reproducible bootstrap CIs")
     p_flb.add_argument("--cutoff", default=None,
                        help="ISO end_date splitting train/test for the temporal slice (default: median)")
+    p_flb.add_argument("--venue", default=None, help="restrict to one venue (e.g. polymarket, kalshi)")
     p_flb.set_defaults(func=cmd_flb)
 
     p_bt = sub.add_parser("backtest-rule", help="phase 3: OOS backtest of the sized rule over a spread sweep")
