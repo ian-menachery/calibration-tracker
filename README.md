@@ -1,6 +1,6 @@
 # calibration-tracker
 
-A reproducible analysis of how well-calibrated Polymarket binary-market prices are, broken down by category and time-to-resolution.
+A reproducible analysis of how well-calibrated prediction-market prices are — Polymarket as the core dataset, with a Kalshi cross-venue check — broken down by category and time-to-resolution.
 
 ## Findings at a glance (v2: is there a tradable edge?)
 
