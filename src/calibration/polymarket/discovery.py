@@ -45,9 +45,12 @@ class GammaMarket(BaseModel):
     outcome_prices: list[str] = Field(default_factory=list, alias="outcomePrices")
     clob_token_ids: list[str] = Field(default_factory=list, alias="clobTokenIds")
     uma_end_date: datetime | None = Field(default=None, alias="umaEndDate")
+    scheduled_end: datetime | None = Field(default=None, alias="endDate")  # set while open; umaEndDate is null pre-resolution
+    created_at: datetime | None = Field(default=None, alias="createdAt")
     volume_num: float | None = Field(default=None, alias="volumeNum")
     uma_resolution_status: str | None = Field(default=None, alias="umaResolutionStatus")
     closed: bool = False
+    active: bool = False
     events: list[_GammaEvent] = Field(default_factory=list)
 
     # outcomes, outcomePrices, clobTokenIds come back as JSON-encoded strings, not arrays.
@@ -64,7 +67,7 @@ class GammaMarket(BaseModel):
     # also have outright garbage values like 'NOW*()'. Pad bare offsets and
     # return None for unparseable strings so the market gets filtered out
     # downstream rather than crashing the whole fetch.
-    @field_validator("uma_end_date", mode="before")
+    @field_validator("uma_end_date", "scheduled_end", "created_at", mode="before")
     @classmethod
     def _normalize_dt(cls, v: object) -> object:
         if not isinstance(v, str):
@@ -165,7 +168,72 @@ def _to_market(m: GammaMarket, fetched_at: datetime) -> Market:
         fetched_at=fetched_at,
         yes_token_id=m.clob_token_ids[0],
         gamma_event_id=gamma_event_id,
+        created_at=m.created_at,
     )
+
+
+def fetch_markets_by_ids(
+    client: GammaClient,
+    condition_ids: list[str],
+    batch_size: int = 50,
+) -> Iterator[GammaMarket]:
+    """Re-fetch already-stored markets by condition_id, in batches.
+
+    Used by the created_at backfill: discovery captures created_at natively now,
+    but rows discovered before the column existed need it filled in. Gamma
+    /markets returns closed markets only when closed=true is set, and accepts a
+    repeated condition_ids param (httpx serializes the list as repeated keys).
+    """
+    for start in range(0, len(condition_ids), batch_size):
+        batch = condition_ids[start : start + batch_size]
+        page = client.get(
+            "/markets",
+            closed="true",
+            condition_ids=batch,
+            limit=batch_size,
+        )
+        for raw in page or []:
+            yield GammaMarket.model_validate(raw)
+
+
+def _is_open_binary(m: GammaMarket, volume_floor: float) -> bool:
+    """Open-market counterpart of _is_eligible_binary: standalone binary, still trading,
+    with a scheduled end. Outcome prices are live (not [0,1]), so that gate is dropped."""
+    if m.closed or not m.active:
+        return False
+    if m.neg_risk:
+        return False
+    if len(m.clob_token_ids) != 2 or len(m.outcomes) != 2:
+        return False
+    if m.scheduled_end is None:
+        return False
+    return m.volume_num is not None and m.volume_num >= volume_floor
+
+
+def fetch_open_markets(
+    client: GammaClient,
+    volume_floor: float = 1_000_000.0,
+    limit: int = 500,
+) -> Iterator[GammaMarket]:
+    """Yield open, standalone-binary markets above the volume floor, volume-desc. Drives
+    the Phase 4 forward scan (candidates approaching their entry horizon)."""
+    offset = 0
+    while True:
+        page = client.get(
+            "/markets", closed="false", active="true",
+            order="volumeNum", ascending="false", limit=limit, offset=offset,
+        )
+        if not page:
+            return
+        for raw in page:
+            m = GammaMarket.model_validate(raw)
+            if m.volume_num is not None and m.volume_num < volume_floor:
+                return  # volume-desc: everything past here is below the floor
+            if _is_open_binary(m, volume_floor):
+                yield m
+        if len(page) < limit:
+            return
+        offset += limit
 
 
 def discover_markets(

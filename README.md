@@ -1,6 +1,13 @@
 # calibration-tracker
 
-A reproducible analysis of how well-calibrated Polymarket binary-market prices are, broken down by category and time-to-resolution.
+A reproducible analysis of how well-calibrated prediction-market prices are — Polymarket as the core dataset, with a Kalshi cross-venue check — broken down by category and time-to-resolution.
+
+## Findings at a glance (v2: is there a tradable edge?)
+
+- **What was measured.** Market calibration only — snapshot **price vs realized outcome** on resolved binary markets across **two venues** (Polymarket and Kalshi). **No model in the loop**; nothing predicts outcomes, we only check whether prices are honest.
+- **The bias is real but small.** Polymarket shows a favorite-longshot bias (longshots resolve YES less often than priced): the recalibration slope is **b≈0.88 at 24h to close**, **b≈0.72 at 7 days**. As a trading rule it earns only **gross +1.7¢ per contract, which is wiped out by a 1–2¢ half-spread** — and it clears the eligibility bar in just two slices (**sports@24h** and **crypto@7d**). A measured, cost-fragile edge, **not a money printer**.
+- **Cross-venue — not a universal law.** A pooled interaction test of the sports@24h slope (Polymarket 0.834 vs Kalshi 0.962) gives a difference of **b3 = 0.128, 95% CI [−0.034, 0.305]** — the interval **includes 0**, so the venue difference is **not statistically significant**. The bias is significant on Polymarket alone and not on Kalshi alone, but the two venues are statistically indistinguishable; venue/population-specificity is *suggested, not established*.
+- **Method honesty.** The trading rule was **pre-registered** (`reports/frozen_rule_v1.json`) before any forward data, and is **forward-tested live** by a standing daily job ([`scripts/forward_daily.ps1`](scripts/forward_daily.ps1)) that logs realizable spread-crossed paper fills and reports **realized-minus-predicted edge** — so the "historical edge ≠ live edge" claim is checked, not asserted. Full design in [`ARCHITECTURE.md` §14](ARCHITECTURE.md).
 
 ## Headline finding
 

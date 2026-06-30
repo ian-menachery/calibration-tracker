@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from calibration.storage.repository import (
+    ForwardSignal,
     Market,
     PriceTick,
     Snapshot,
@@ -13,8 +14,14 @@ from calibration.storage.repository import (
     init_db,
     insert_market_tags,
     insert_price_ticks,
+    insert_signals,
+    mark_signal_resolved,
+    markets_missing_created_at,
     markets_missing_history,
     markets_missing_tags,
+    min_tick_per_market,
+    open_signals,
+    set_market_created_at,
     upsert_markets,
     upsert_snapshots,
 )
@@ -205,3 +212,83 @@ def test_markets_missing_tags_excludes_already_tagged_markets(conn):
     insert_market_tags(conn, [("0xa", "sports")])
     pairs = markets_missing_tags(conn)
     assert pairs == [("0xb", "evt-2")]
+
+
+def test_venue_defaults_polymarket_and_roundtrips(conn):
+    upsert_markets(conn, [_market("0xp"), _market("0xk", venue="kalshi")])
+    assert get_market(conn, "0xp").venue == "polymarket"  # default
+    assert get_market(conn, "0xk").venue == "kalshi"
+
+
+def test_created_at_roundtrips_through_upsert_and_get(conn):
+    created = datetime(2024, 9, 1, 8, 30, 0, tzinfo=timezone.utc)
+    m = _market("0xc", created_at=created)
+    upsert_markets(conn, [m])
+    got = get_market(conn, "0xc")
+    assert got.created_at == created
+
+
+def test_markets_missing_created_at_lists_only_null_rows(conn):
+    upsert_markets(conn, [
+        _market("0xa"),  # created_at defaults to None
+        _market("0xb", created_at=datetime(2024, 1, 1, tzinfo=timezone.utc)),
+    ])
+    assert markets_missing_created_at(conn) == ["0xa"]
+
+
+def test_set_market_created_at_fills_and_clears_from_missing(conn):
+    upsert_markets(conn, [_market("0xa"), _market("0xb")])
+    assert set(markets_missing_created_at(conn)) == {"0xa", "0xb"}
+    n = set_market_created_at(conn, [("0xa", datetime(2025, 3, 4, tzinfo=timezone.utc))])
+    assert n == 1
+    assert markets_missing_created_at(conn) == ["0xb"]
+    assert get_market(conn, "0xa").created_at == datetime(2025, 3, 4, tzinfo=timezone.utc)
+
+
+def _signal(market_id="0xs", horizon="24h", **overrides):
+    base = dict(
+        market_id=market_id, venue="polymarket", horizon=horizon,
+        observed_at=datetime(2026, 6, 1, tzinfo=timezone.utc), category="sports",
+        market_price=0.92, side="YES", q_hat=0.95, q_used=0.93, edge_gross=0.03,
+        half_spread=0.01, fee=0.0, edge_net=0.02, stake_fraction=0.05, entry_price=0.93,
+        end_date=datetime(2026, 6, 5, tzinfo=timezone.utc),
+    )
+    base.update(overrides)
+    return ForwardSignal(**base)
+
+
+def test_forward_signals_insert_and_open_roundtrip(conn):
+    insert_signals(conn, [_signal("0xa"), _signal("0xb", horizon="7d")])
+    got = open_signals(conn)
+    assert len(got) == 2
+    assert {s.market_id for s in got} == {"0xa", "0xb"}
+    a = next(s for s in got if s.market_id == "0xa")
+    assert a.side == "YES" and a.entry_price == 0.93 and a.status == "open"
+
+
+def test_forward_signals_insert_is_ignore_on_pk(conn):
+    insert_signals(conn, [_signal("0xa", entry_price=0.93)])
+    insert_signals(conn, [_signal("0xa", entry_price=0.99)])  # same (market,horizon) -> ignored
+    got = open_signals(conn)
+    assert len(got) == 1 and got[0].entry_price == 0.93  # original entry locked
+
+
+def test_mark_signal_resolved_clears_from_open(conn):
+    insert_signals(conn, [_signal("0xa")])
+    mark_signal_resolved(conn, "0xa", "24h", status="resolved", resolved_value=1.0,
+                         pnl=0.07, realized_minus_predicted=-0.01,
+                         settled_at=datetime(2026, 6, 6, tzinfo=timezone.utc))
+    assert open_signals(conn) == []
+
+
+def test_min_tick_per_market_returns_earliest(conn):
+    upsert_markets(conn, [_market("0xa"), _market("0xb")])
+    base = datetime(2025, 1, 10, 12, 0, tzinfo=timezone.utc)
+    insert_price_ticks(conn, [
+        PriceTick("0xa", base + timedelta(hours=2), 0.4),
+        PriceTick("0xa", base, 0.5),  # earliest for 0xa
+        PriceTick("0xb", base + timedelta(days=3), 0.6),
+    ])
+    got = dict(min_tick_per_market(conn))
+    assert got["0xa"] == base.isoformat()
+    assert got["0xb"] == (base + timedelta(days=3)).isoformat()

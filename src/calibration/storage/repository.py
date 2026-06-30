@@ -30,6 +30,8 @@ class Market:
     fetched_at: datetime
     yes_token_id: str | None  # nullable for migrated rows pre-backfill; always set after re-discover
     gamma_event_id: str | None  # nullable; populated by re-discover, used by fetch-tags
+    created_at: datetime | None = None  # Gamma createdAt; nullable until backfilled (backfill-created)
+    venue: str = "polymarket"  # 'polymarket' | 'kalshi' (Phase 5 cross-venue)
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,31 @@ class Snapshot:
     observed_at: datetime
 
 
+@dataclass(frozen=True)
+class ForwardSignal:
+    market_id: str
+    venue: str
+    horizon: str
+    observed_at: datetime
+    category: str | None
+    market_price: float
+    side: str
+    q_hat: float
+    q_used: float
+    edge_gross: float
+    half_spread: float
+    fee: float
+    edge_net: float
+    stake_fraction: float
+    entry_price: float
+    end_date: datetime
+    status: str = "open"
+    resolved_value: float | None = None
+    pnl: float | None = None
+    realized_minus_predicted: float | None = None
+    settled_at: datetime | None = None
+
+
 def init_db(path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.execute("PRAGMA foreign_keys = ON")
@@ -59,6 +86,14 @@ def init_db(path: str | Path) -> sqlite3.Connection:
         conn.execute("ALTER TABLE markets ADD COLUMN yes_token_id TEXT")
     if "gamma_event_id" not in cols:
         conn.execute("ALTER TABLE markets ADD COLUMN gamma_event_id TEXT")
+    if "created_at" not in cols:
+        conn.execute("ALTER TABLE markets ADD COLUMN created_at TEXT")
+    if "venue" not in cols:
+        conn.execute("ALTER TABLE markets ADD COLUMN venue TEXT NOT NULL DEFAULT 'polymarket'")
+    # Drop the inert training_features table left in local DBs by the rolled-back
+    # v2 modeling spike. init_db no longer creates it; this clears stragglers.
+    # (Its 2,905 rows are unrelated to the T-7d 2,905-market cohort — coincidence.)
+    conn.execute("DROP TABLE IF EXISTS training_features")
     conn.commit()
     return conn
 
@@ -79,6 +114,8 @@ def upsert_markets(conn: sqlite3.Connection, markets: Iterable[Market]) -> int:
             m.fetched_at.isoformat(),
             m.yes_token_id,
             m.gamma_event_id,
+            m.created_at.isoformat() if m.created_at else None,
+            m.venue,
         )
         for m in markets
     ]
@@ -87,8 +124,8 @@ def upsert_markets(conn: sqlite3.Connection, markets: Iterable[Market]) -> int:
         INSERT OR REPLACE INTO markets (
             market_id, slug, question, category, market_type, parent_event_id,
             end_date, resolved_outcome, resolved_value, total_volume_usd, fetched_at,
-            yes_token_id, gamma_event_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            yes_token_id, gamma_event_id, created_at, venue
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )
@@ -111,6 +148,9 @@ def get_market(conn: sqlite3.Connection, market_id: str) -> Market | None:
     data = dict(zip(cols, row))
     data["end_date"] = datetime.fromisoformat(data["end_date"])
     data["fetched_at"] = datetime.fromisoformat(data["fetched_at"])
+    data["created_at"] = (
+        datetime.fromisoformat(data["created_at"]) if data["created_at"] else None
+    )
     return Market(**data)
 
 
@@ -232,24 +272,123 @@ def markets_missing_tags(conn: sqlite3.Connection) -> list[tuple[str, str]]:
     return [(r[0], r[1]) for r in rows]
 
 
+def markets_missing_created_at(conn: sqlite3.Connection) -> list[str]:
+    """Market IDs with no created_at yet (rows discovered before the column existed).
+
+    Drives backfill-created resumability — re-running only fetches the stragglers.
+    """
+    rows = conn.execute(
+        "SELECT market_id FROM markets WHERE created_at IS NULL"
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def set_market_created_at(
+    conn: sqlite3.Connection, pairs: Iterable[tuple[str, datetime]]
+) -> int:
+    """Set created_at for the given (market_id, datetime) pairs. Datetime -> ISO at the boundary."""
+    rows = [(dt.isoformat(), mid) for mid, dt in pairs]
+    conn.executemany("UPDATE markets SET created_at = ? WHERE market_id = ?", rows)
+    conn.commit()
+    return len(rows)
+
+
+def min_tick_per_market(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+    """(market_id, earliest tick timestamp ISO) for every market with price history.
+
+    Feeds the tick-coverage data-quality check: a market whose first tick is less
+    than 7 days before its end_date can't have a real T-7d snapshot.
+    """
+    rows = conn.execute(
+        "SELECT market_id, MIN(timestamp) FROM raw_price_history GROUP BY market_id"
+    ).fetchall()
+    return [(r[0], r[1]) for r in rows]
+
+
 def select_snapshot_join(
-    conn: sqlite3.Connection, snapshot_type: str
+    conn: sqlite3.Connection, snapshot_type: str, venue: str | None = None
 ) -> list[tuple]:
     """markets x price_snapshots for one snapshot type. Drives Stage 4 analysis.
 
     Returns rows of (market_id, slug, predicted_price, resolved_value,
-    total_volume_usd, end_date). Filters out rows missing resolved_value
-    defensively (shouldn't happen with our discover filter, but the math
-    can't handle NULL outcomes).
+    total_volume_usd, end_date, created_at, category). Filters out rows missing
+    resolved_value defensively (shouldn't happen with our discover filter,
+    but the math can't handle NULL outcomes). created_at/category may be NULL
+    (Polymarket stores NULL category and derives it at analysis time; Kalshi
+    stores its series-based category). Pass `venue` to restrict to one venue.
     """
-    return conn.execute(
-        """
+    sql = """
         SELECT m.market_id, m.slug, s.price, m.resolved_value,
-               m.total_volume_usd, m.end_date
+               m.total_volume_usd, m.end_date, m.created_at, m.category
         FROM markets m
         JOIN price_snapshots s ON s.market_id = m.market_id
         WHERE s.snapshot_type = ?
           AND m.resolved_value IS NOT NULL
-        """,
-        (snapshot_type,),
+    """
+    params: list = [snapshot_type]
+    if venue is not None:
+        sql += " AND m.venue = ?"
+        params.append(venue)
+    return conn.execute(sql, params).fetchall()
+
+
+_SIGNAL_COLS = [f.name for f in fields(ForwardSignal)]
+_SIGNAL_DT = {"observed_at", "end_date", "settled_at"}
+
+
+def insert_signals(conn: sqlite3.Connection, signals: Iterable[ForwardSignal]) -> int:
+    """INSERT OR IGNORE forward signals keyed by (market_id, horizon) so re-scanning a
+    market doesn't overwrite its locked entry price."""
+    rows = []
+    for s in signals:
+        vals = []
+        for name in _SIGNAL_COLS:
+            v = getattr(s, name)
+            vals.append(v.isoformat() if isinstance(v, datetime) else v)
+        rows.append(tuple(vals))
+    placeholders = ", ".join("?" * len(_SIGNAL_COLS))
+    conn.executemany(
+        f"INSERT OR IGNORE INTO forward_signals ({', '.join(_SIGNAL_COLS)}) VALUES ({placeholders})",
+        rows,
+    )
+    conn.commit()
+    return len(rows)
+
+
+def _row_to_signal(row: tuple) -> ForwardSignal:
+    data = dict(zip(_SIGNAL_COLS, row))
+    for k in _SIGNAL_DT:
+        data[k] = datetime.fromisoformat(data[k]) if data[k] else None
+    return ForwardSignal(**data)
+
+
+def open_signals(conn: sqlite3.Connection) -> list[ForwardSignal]:
+    """All forward signals still awaiting resolution (status='open')."""
+    rows = conn.execute(
+        f"SELECT {', '.join(_SIGNAL_COLS)} FROM forward_signals WHERE status = 'open'"
     ).fetchall()
+    return [_row_to_signal(r) for r in rows]
+
+
+def mark_signal_resolved(
+    conn: sqlite3.Connection,
+    market_id: str,
+    horizon: str,
+    status: str,
+    resolved_value: float | None,
+    pnl: float | None,
+    realized_minus_predicted: float | None,
+    settled_at: datetime,
+) -> None:
+    """Settle a forward signal: record status ('resolved'/'void'), outcome, P&L, and the
+    realized-minus-predicted edge gap."""
+    conn.execute(
+        """
+        UPDATE forward_signals
+        SET status = ?, resolved_value = ?, pnl = ?, realized_minus_predicted = ?, settled_at = ?
+        WHERE market_id = ? AND horizon = ?
+        """,
+        (status, resolved_value, pnl, realized_minus_predicted, settled_at.isoformat(),
+         market_id, horizon),
+    )
+    conn.commit()

@@ -139,27 +139,35 @@ def categorize_market(slug: str | None, tags: list[str]) -> str:
 
 
 def load_calibration_frame(
-    conn: sqlite3.Connection, snapshot_type: str
+    conn: sqlite3.Connection, snapshot_type: str, venue: str | None = None
 ) -> pd.DataFrame:
     """Pull markets x price_snapshots into a DataFrame for analysis.
 
     Categorization (v1.1): each market's category is derived from its
     Gamma tags via `_CATEGORY_MAPPING`; if none of the market's tags
-    match a known bucket, falls back to the v1 slug heuristic.
+    match a known bucket, falls back to the v1 slug heuristic. Pass `venue`
+    to restrict to one venue (Phase 5 cross-venue).
     """
-    rows = select_snapshot_join(conn, snapshot_type)
+    rows = select_snapshot_join(conn, snapshot_type, venue=venue)
     df = pd.DataFrame(
         rows,
-        columns=["market_id", "slug", "predicted", "outcome", "volume", "end_date"],
+        columns=["market_id", "slug", "predicted", "outcome", "volume", "end_date",
+                 "created_at", "stored_category"],
     )
     if df.empty:
         df["category"] = pd.Series(dtype=str)
         return df
     tags_by_market = get_tags_for_markets(conn, df["market_id"].tolist())
-    df["category"] = df.apply(
-        lambda row: categorize_market(row["slug"], tags_by_market.get(row["market_id"], [])),
-        axis=1,
-    )
+
+    def _category(row):
+        # Use the stored category when present (Kalshi's series-based label); otherwise
+        # derive it (Polymarket stores NULL and categorizes from tags / slug).
+        if row["stored_category"]:
+            return row["stored_category"]
+        return categorize_market(row["slug"], tags_by_market.get(row["market_id"], []))
+
+    df["category"] = df.apply(_category, axis=1)
+    df = df.drop(columns=["stored_category"])
     return df
 
 

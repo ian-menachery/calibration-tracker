@@ -11,6 +11,10 @@ venv/
 # Phase 4 intermediate CSVs are regenerated each run; not committed.
 # reports/figures/ IS committed (Phase 5 writeup embeds the PNGs).
 reports/calibration_*.csv
+reports/flb_*.csv
+
+# Dated forward-test run logs (scripts/forward_daily.ps1).
+logs/
 
 # Throwaway local viewer scripts (created ad-hoc during sessions).
 _view_*_temp.py

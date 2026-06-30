@@ -52,6 +52,7 @@ markets
   resolved_value     REAL                 -- 1.0 for YES, 0.0 for NO
   total_volume_usd   REAL
   fetched_at         TIMESTAMP
+  created_at         TIMESTAMP NULL        -- Gamma createdAt; market origin, for time-to-resolution (v2; backfilled — see §14)
 
 price_snapshots
   market_id          TEXT
@@ -93,6 +94,8 @@ Each stage is a separate module that reads from and writes to SQLite. Stages are
 
 **Stage 5 — Report.** Generate the writeup as a single markdown file with charts saved to `reports/figures/`. The writeup is a deliverable, not a side effect — treat it as the actual product.
 
+**v2 stages (favorite-longshot measurement).** Three stages were added on top of the v1 pipeline, all idempotent/resumable like the rest: `backfill-created` (fetch `markets.created_at` from Gamma so time-to-resolution is derivable), `tick-coverage` (data-quality diagnostic flagging markets with <7d of price history before resolution), and `flb` (the analysis stage that fits the recalibration map and emits the FLB results). See §14 for the full description.
+
 ## 6. Tech Stack (Minimal On Purpose)
 
 ```
@@ -131,10 +134,13 @@ calibration-tracker/
 │   ├── storage/
 │   │   ├── schema.sql        # CREATE TABLE statements
 │   │   └── repository.py     # read/write helpers, no business logic
+│   ├── kalshi/               # v2 Phase 5: Kalshi venue (httpx here too) — client, discovery, candles
 │   ├── analysis/
 │   │   ├── snapshots.py      # Stage 3
 │   │   ├── calibration.py    # bucketing, realized rates
-│   │   └── metrics.py        # Brier, log loss, bootstraps
+│   │   ├── metrics.py        # Brier, log loss, bootstraps
+│   │   ├── recalibration.py  # v2: logit recalibration fit (FLB), see §14
+│   │   └── edge.py           # v2 Phase 3: edge / Kelly / cost / VWAP sizing, see §14
 │   ├── reporting/
 │   │   └── charts.py         # matplotlib chart functions
 │   └── cli.py                # one entry point per stage
@@ -151,9 +157,20 @@ calibration fetch-tags
 calibration fetch-prices
 calibration extract-snapshots
 calibration analyze
+calibration backfill-created      # v2: backfill markets.created_at from Gamma (§14)
+calibration tick-coverage         # v2: flag markets with <7d of history before resolution (§14)
+calibration flb [--venue V]       # v2: favorite-longshot recalibration fit (§14)
+calibration backtest-rule         # v2 Phase 3: OOS rule backtest over a spread sweep (§14)
+calibration freeze-rule           # v2 Phase 3: write frozen_rule_v1.json + flb_map.csv (§14)
+calibration forward-scan          # v2 Phase 4: log realizable paper fills vs the frozen rule (§14)
+calibration forward-settle        # v2 Phase 4: settle resolved signals; P&L + dispute->void (§14)
+calibration kalshi-discover       # v2 Phase 5: settled binary Kalshi markets by series (§14)
+calibration kalshi-fetch-candles  # v2 Phase 5: Kalshi candlesticks -> price history (§14)
+calibration cross-venue           # v2 Phase 5: FLB across venues on matched categories (§14)
+calibration venue-difftest        # v2 Phase 5: pooled interaction test of the cross-venue slope diff (§14)
 ```
 
-(A `fetch-tags` stage was added during implementation to pull per-market category tags from Gamma's `/events/{id}` endpoint into a `market_tags` table; this isn't in the original data model above but is part of the shipped pipeline. The originally-planned `report` stage was folded into `analyze` — see §5.)
+(A `fetch-tags` stage was added during implementation to pull per-market category tags from Gamma's `/events/{id}` endpoint into a `market_tags` table; this isn't in the original data model above but is part of the shipped pipeline. The originally-planned `report` stage was folded into `analyze` — see §5. The `backfill-created` / `tick-coverage` / `flb` stages are the v2 favorite-longshot extension — see §14.)
 
 This matters because resumability and observability come from being able to run stages independently and inspect the DB between them.
 
@@ -244,3 +261,36 @@ These are real but don't block starting:
 3. **Selection bias on which markets exist.** Polymarket only lists markets people want to bet on; "popular" markets may be more or less calibrated than rare ones. Mitigation: acknowledge in the writeup, cohort by volume.
 4. **Volume-weighted vs market-weighted calibration.** Both are interesting. v1: report both, pick one for the headline chart based on what's more legible.
 5. **Scope creep into trading.** If you find yourself thinking "huh, the 80% bucket is actually 73%, that's exploitable" — don't. That's a different project that loses money. Stay analytical.
+
+## 14. v2 Extension: Favorite-Longshot Measurement (FLB)
+
+v1/v1.1 answered *"is Polymarket calibrated?"* with reliability diagrams and Brier scores. v2 quantifies the *shape* of the miscalibration as a single interpretable parameter and stress-tests it. This is **measurement, not trading** — the same scope ceiling in §13.5 applies. It is built in phases (Phase 0 unblock → Phase 1 measurement → Phase 2 backfill); Phase 3 (sized rule) and Phase 4 (forward test) are designed but deliberately not built.
+
+**The recalibration map.** Fit `logit(q) = a + b·logit(p)` where `p` is the snapshot price and `q` the realized outcome, by a pure-numpy binomial IRLS in `analysis/recalibration.py`. `a≈0, b≈1` is perfect calibration; **`b < 1` is the favorite-longshot signature** (the realized curve is flatter than the diagonal — longshots resolve YES less often than priced, favorites more). The fit has a separation guard (coefficients diverging past ±30 → `nan`), so saturated horizons degrade gracefully rather than reporting spurious values. CIs come from a paired bootstrap reusing the same resampling philosophy as `metrics.bootstrap_ci`.
+
+**New data:** `markets.created_at` (Gamma `createdAt`), backfilled for existing rows by `backfill-created` and captured natively by discovery going forward. It makes market lifespan / time-to-resolution derivable.
+
+**New stages (all idempotent/resumable):**
+- `backfill-created` — re-fetch stored markets by `condition_id` (batched, `closed=true`) to fill `created_at`.
+- `tick-coverage` — pure-SQL diagnostic writing `reports/flb_tick_coverage.csv`; flags markets whose first price tick is <7d before resolution (their T-7d snapshot is the opening tick stretched to tolerance, not a true 7-days-before price).
+- `flb` — fits the recalibration map per horizon and per slice (volume quartile, era, category, time-to-resolution, temporal train/test split, and an all-horizons-intersection cohort that holds the population constant), plus market-vs-recalibrated Brier and tail-power counts. Writes `reports/flb_recalibration.csv`.
+
+**Methodology guardrails (enforced in the analysis):** no model in the scoring path (price vs outcome only; category is a slice label, never a score); out-of-sample temporal split for any headline `b`; population held constant across horizon/era comparisons.
+
+**Headline results (current dataset):** clear FLB at the tradeable horizons — T-24h `b≈0.88`, T-7d `b≈0.72`; T-close is saturated (prices ≈ outcomes, Brier ≈ 0) so `b` is undefined there and flagged. The bias is **concentrated in sports** (`b≈0.83`, the largest cohort, Brier ≈ chance) while politics and geopolitics run `b > 1` (real signal) — consistent with the v1.1 sports-vs-politics headline. A map fit on older markets does **not** improve Brier out-of-sample, i.e. historical edge ≠ live edge.
+
+**Stack:** unchanged from §6 — numpy/pandas only, no sklearn/scipy. (The only new dependency contemplated for later phases is the Anthropic SDK, and only if category labelling ever needs an LLM fallback; the current rule-based tag mapping covers ~98% of markets, so it is not used.)
+
+### Phases 3–5 (built): sized rule, forward test, cross-venue
+
+The gate (b<1, CI excludes 1, persistent, but ~zero out-of-sample Brier gain and sports-concentrated) cleared, so the rule + forward test were built — as **measurement, never live capital**.
+
+**Phase 3 — sized rule (`analysis/edge.py`).** Edge `e(p)=q̂(p)−p` (back the favorite when e>0, fade the longshot when e<0); binary Kelly `(q−p)/(1−p)` YES / `(p−q)/p` NO, fractional (¼) and sized off the **conservative** q bound (`q_lo` for YES, `q_hi` for NO) from `recalibration.predict_band`; net edge = gross − half-spread − fee (held to resolution ⇒ no exit cost). `backtest-rule` validates out-of-sample over a half-spread sweep and applies only the **per-category** map where the b-CI sits below 1; on current data gross edge **dies between 1¢ and 2¢ half-spread**. `freeze-rule` writes the pre-registration `reports/frozen_rule_v1.json` (per-category a,b on all resolved markets + a precomputed q-band) and the PMRA interface export `reports/flb_map.csv`.
+
+**Phase 4 — forward test (`forward_signals` table).** `forward-scan` loads the **frozen** rule, finds open standalone-binary markets in the T-24h/7d entry window with an eligible category, fetches the **live CLOB order book**, and logs a realizable (VWAP, spread-crossed) paper fill when net edge is positive — idempotent per (market, horizon), no fitting on forward data. `forward-settle` resolves signals once closed, recording held-to-resolution P&L and **realized-minus-predicted edge** (the efficiency tax), and voids disputed (`umaResolutionStatus`) resolutions. It accrues on the calendar; run `forward-scan` on a cadence.
+
+**Phase 5 — Kalshi cross-venue (`venue` column + `kalshi/` module).** `markets` gains a `venue` column; the recalibration math is unchanged (venue-neutral). The `kalshi/` module (httpx confined there, **no signing / no `cryptography`** — public reads) discovers settled binaries **per series** (the raw feed is ~99% MVE parlays; the series prefix is the clean category key) and fetches candlesticks into the same `PriceTick`/snapshot shape. `cross-venue` compares FLB on **matched categories** (present on both venues), surfacing the population-mismatch caveat. **Finding (T-24h sports), tested directly:** a pooled interaction fit (`venue-difftest`, `venue_slope_difference`) — `logit(P)=b0+b1·logit(p)+b2·kalshi+b3·(kalshi·logit(p))` — gives Polymarket slope **b1=0.834** (n=2,683) and Kalshi slope **b1+b3=0.962** (n=2,262), with the cross-venue difference **b3=0.128, 95% CI [−0.034, 0.305]**. The CI **includes 0**, so the slopes are **not significantly different**: FLB is significant on Polymarket alone (its b excludes 1) and not on Kalshi alone (its b includes 1), but the two venues are statistically indistinguishable — a *difference in significance is not a significant difference*. We therefore **do not claim** the bias differs by venue; the point estimate leans toward a shallower Kalshi slope (less FLB) but is not established. **Caveat:** even a significant b3 would say the venues differ, not why — sports mix and bettor population could drive it. Rule commands (`backtest-rule`/`freeze-rule`) are scoped to `--venue` (default polymarket) so venues never pool.
+
+**Interface to PMRA:** `reports/flb_map.csv` (horizon, category → a, b) is the consumable artifact. PMRA today recalibrates its *model* probability (temperature scaling), not the *market* price, so consuming this map means adding a market-price benchmark concept **in PMRA**. Projects stay separate; this repo only emits the CSV.
+
+**Still deferred:** live trading of the rule (real capital); a **matched politics/geopolitics cross-venue sweep** (Kalshi fragments these into ~2,052 Politics / 151 World single-question series, so it needs a category-based discovery pass, not per-series enumeration); and the v2 ML "predict miscalibration" model in ROADMAP.md.
