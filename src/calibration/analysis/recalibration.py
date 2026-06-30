@@ -41,25 +41,21 @@ def _sigmoid(z: np.ndarray) -> np.ndarray:
 _SEPARATION_GUARD = 30.0
 
 
-def fit_logit_recalibration(
-    predicted,
-    outcome,
+def _fit_irls(
+    design: np.ndarray,
+    y: np.ndarray,
     eps: float = _EPS,
     max_iter: int = 50,
     tol: float = 1e-8,
-) -> tuple[float, float]:
-    """Fit logit(q) = a + b*logit(p) by IRLS. Returns (a, b).
-
-    Returns (nan, nan) for a degenerate fit: fewer than 2 rows, all outcomes
-    identical, or perfect/near separation (coefficients diverge, no finite MLE —
-    this is the saturated case, e.g. T-close where prices already equal outcomes).
-    """
-    x = _logit(predicted, eps)
-    y = np.asarray(outcome, dtype=float)
+) -> np.ndarray | None:
+    """Binomial-logit IRLS (Newton) for an arbitrary design matrix. Returns the
+    coefficient vector, or None for a degenerate fit: <2 rows, all outcomes
+    identical, a singular step, or coefficients diverging past the separation
+    guard (no finite MLE — the saturated case)."""
+    y = np.asarray(y, dtype=float)
     if len(y) < 2 or np.unique(y).size < 2:
-        return (_NAN, _NAN)
-    design = np.column_stack([np.ones_like(x), x])  # columns: [1, logit(p)]
-    beta = np.zeros(2)
+        return None
+    beta = np.zeros(design.shape[1])
     for _ in range(max_iter):
         mu = _sigmoid(design @ beta)
         w = np.clip(mu * (1.0 - mu), eps, None)  # IRLS variance weights
@@ -68,12 +64,29 @@ def fit_logit_recalibration(
         try:
             step = np.linalg.solve(hessian, grad)
         except np.linalg.LinAlgError:
-            return (_NAN, _NAN)
+            return None
         beta = beta + step
         if not np.all(np.isfinite(beta)) or np.max(np.abs(beta)) > _SEPARATION_GUARD:
-            return (_NAN, _NAN)  # diverging -> separated, no finite MLE
+            return None  # diverging -> separated, no finite MLE
         if np.max(np.abs(step)) < tol:
             break
+    return beta
+
+
+def fit_logit_recalibration(
+    predicted,
+    outcome,
+    eps: float = _EPS,
+    max_iter: int = 50,
+    tol: float = 1e-8,
+) -> tuple[float, float]:
+    """Fit logit(q) = a + b*logit(p) by IRLS. Returns (a, b), or (nan, nan) for a
+    degenerate fit (see _fit_irls)."""
+    x = _logit(predicted, eps)
+    design = np.column_stack([np.ones_like(x), x])  # columns: [1, logit(p)]
+    beta = _fit_irls(design, outcome, eps=eps, max_iter=max_iter, tol=tol)
+    if beta is None:
+        return (_NAN, _NAN)
     return (float(beta[0]), float(beta[1]))
 
 
@@ -193,3 +206,62 @@ def recalibration_by_group(
         )
         rows.append({"subgroup": label, **res})
     return pd.DataFrame(rows)
+
+
+def _interaction_b3(price: np.ndarray, outcome: np.ndarray, k: np.ndarray, eps: float = _EPS):
+    """Fit logit(P) = b0 + b1*logit(p) + b2*k + b3*(k*logit(p)). Returns (b1, b3) or None.
+    b1 is the reference-venue slope; b1+b3 the other venue's slope; b3 the difference."""
+    x = _logit(price, eps)
+    design = np.column_stack([np.ones_like(x), x, k, k * x])  # [1, logit(p), kalshi, kalshi*logit(p)]
+    beta = _fit_irls(design, outcome, eps=eps)
+    if beta is None:
+        return None
+    return (float(beta[1]), float(beta[3]))
+
+
+def venue_slope_difference(
+    price,
+    outcome,
+    is_kalshi,
+    n_iter: int = 1000,
+    rng: np.random.Generator | None = None,
+    alpha: float = 0.05,
+) -> dict:
+    """Pooled two-venue interaction test of the FLB slope difference.
+
+    Fits one logistic calibration in logit space over rows from both venues with a
+    kalshi 0/1 indicator and its interaction with logit(price). Reports b3 (the
+    Kalshi-minus-Polymarket slope difference) with a bootstrap CI by resampling the
+    pooled rows and refitting. b3 CI excluding 0 => the slopes differ significantly.
+    """
+    p = np.asarray(price, dtype=float)
+    y = np.asarray(outcome, dtype=float)
+    k = np.asarray(is_kalshi, dtype=float)
+    fit = _interaction_b3(p, y, k)
+    out = {
+        "n": int(len(y)),
+        "n_poly": int(np.sum(k == 0)),
+        "n_kalshi": int(np.sum(k == 1)),
+        "poly_slope": _NAN,
+        "kalshi_slope": _NAN,
+        "b3": _NAN,
+        "b3_ci_lo": _NAN,
+        "b3_ci_hi": _NAN,
+    }
+    if fit is None:
+        return out
+    b1, b3 = fit
+    out["poly_slope"] = b1
+    out["kalshi_slope"] = b1 + b3
+    out["b3"] = b3
+    if rng is None:
+        rng = np.random.default_rng()
+    n = len(y)
+    samples = np.empty(n_iter)
+    for i in range(n_iter):
+        idx = rng.integers(0, n, size=n)
+        r = _interaction_b3(p[idx], y[idx], k[idx])
+        samples[i] = r[1] if r is not None else _NAN
+    out["b3_ci_lo"] = float(np.nanquantile(samples, alpha / 2))
+    out["b3_ci_hi"] = float(np.nanquantile(samples, 1.0 - alpha / 2))
+    return out

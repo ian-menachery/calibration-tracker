@@ -10,6 +10,7 @@ from calibration.analysis.recalibration import (
     recalibrated_brier,
     recalibration_by_group,
     recalibration_with_ci,
+    venue_slope_difference,
 )
 
 
@@ -21,6 +22,35 @@ def _simulate(a_true, b_true, n, seed=0):
     prob = 1.0 / (1.0 + np.exp(-(a_true + b_true * logit_p)))
     y = (rng.uniform(size=n) < prob).astype(float)
     return p, y
+
+
+def _simulate_two_venues(b_poly, b_kalshi, n_each, seed):
+    """Pooled (price, outcome, is_kalshi) with a known slope per venue."""
+    pp, yp = _simulate(a_true=0.0, b_true=b_poly, n=n_each, seed=seed)
+    pk, yk = _simulate(a_true=0.0, b_true=b_kalshi, n=n_each, seed=seed + 1)
+    price = np.concatenate([pp, pk])
+    outcome = np.concatenate([yp, yk])
+    is_kalshi = np.concatenate([np.zeros(n_each), np.ones(n_each)])
+    return price, outcome, is_kalshi
+
+
+def test_venue_slope_difference_recovers_b3():
+    # Polymarket slope 0.8, Kalshi slope 1.05 => true b3 = 0.25.
+    price, outcome, k = _simulate_two_venues(0.8, 1.05, n_each=30_000, seed=11)
+    res = venue_slope_difference(price, outcome, k, n_iter=200, rng=np.random.default_rng(0))
+    assert res["poly_slope"] == pytest.approx(0.8, abs=0.08)
+    assert res["kalshi_slope"] == pytest.approx(1.05, abs=0.08)
+    assert res["b3"] == pytest.approx(0.25, abs=0.08)
+    assert res["b3_ci_lo"] <= res["b3"] <= res["b3_ci_hi"]
+    assert res["b3_ci_lo"] > 0.0  # significant difference
+    assert res["n_poly"] == 30_000 and res["n_kalshi"] == 30_000
+
+
+def test_venue_slope_difference_equal_slopes_includes_zero():
+    price, outcome, k = _simulate_two_venues(0.9, 0.9, n_each=20_000, seed=21)
+    res = venue_slope_difference(price, outcome, k, n_iter=200, rng=np.random.default_rng(0))
+    assert res["b3"] == pytest.approx(0.0, abs=0.08)
+    assert res["b3_ci_lo"] <= 0.0 <= res["b3_ci_hi"]  # not significant
 
 
 def test_recovers_known_coefficients():
