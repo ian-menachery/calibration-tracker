@@ -31,6 +31,7 @@ from calibration.analysis.recalibration import (
     recalibrated_brier,
     recalibration_by_group,
     recalibration_with_ci,
+    venue_slope_difference,
 )
 from calibration.analysis.snapshots import extract_snapshots
 from calibration.kalshi.candles import fetch_market_candles
@@ -469,6 +470,43 @@ def cmd_cross_venue(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_venue_difftest(args: argparse.Namespace) -> int:
+    """Pooled two-venue interaction test: is the FLB slope significantly different across
+    venues for one category/horizon? Reports b3 (Kalshi minus Polymarket slope) + CI."""
+    conn = init_db(Path(args.db))
+    try:
+        frames = {}
+        for v in ("polymarket", "kalshi"):
+            df = load_calibration_frame(conn, args.horizon, venue=v)
+            df = df[df["category"] == args.category]
+            if not df.empty:
+                frames[v] = df
+    finally:
+        conn.close()
+    if len(frames) < 2:
+        print(f"Need both venues for {args.category}@{args.horizon}; have {sorted(frames)}.")
+        return 0
+    price = np.concatenate([frames["polymarket"]["predicted"].to_numpy(),
+                            frames["kalshi"]["predicted"].to_numpy()])
+    outcome = np.concatenate([frames["polymarket"]["outcome"].to_numpy(),
+                              frames["kalshi"]["outcome"].to_numpy()])
+    is_kalshi = np.concatenate([np.zeros(len(frames["polymarket"])),
+                                np.ones(len(frames["kalshi"]))])
+    res = venue_slope_difference(price, outcome, is_kalshi,
+                                 n_iter=args.bootstrap, rng=np.random.default_rng(args.seed))
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    row = {"category": args.category, "horizon": args.horizon, **res}
+    pd.DataFrame([row]).to_csv(out_dir / "flb_difftest.csv", index=False)
+    sig = "excludes 0 -> slopes DIFFER" if (res["b3_ci_lo"] > 0 or res["b3_ci_hi"] < 0) else "includes 0 -> not significant"
+    print(f"=== pooled venue slope-difference test: {args.category}@{args.horizon} ===")
+    print(f"  Polymarket slope b1   = {res['poly_slope']:.3f}   (n={res['n_poly']:,})")
+    print(f"  Kalshi slope    b1+b3 = {res['kalshi_slope']:.3f}   (n={res['n_kalshi']:,})")
+    print(f"  difference      b3    = {res['b3']:.3f}  95% CI [{res['b3_ci_lo']:.3f}, {res['b3_ci_hi']:.3f}]  ({sig})")
+    print(f"Wrote {out_dir / 'flb_difftest.csv'}")
+    return 0
+
+
 def _interp(grid: list[float], arr: list[float], x: float) -> float:
     return float(np.interp(x, np.asarray(grid), np.asarray(arr)))
 
@@ -828,6 +866,15 @@ def main(argv: list[str] | None = None) -> int:
     p_cv.add_argument("--bootstrap", type=int, default=1000)
     p_cv.add_argument("--seed", type=int, default=42)
     p_cv.set_defaults(func=cmd_cross_venue)
+
+    p_dt = sub.add_parser("venue-difftest", help="phase 5: pooled interaction test of the cross-venue FLB slope difference")
+    p_dt.add_argument("--db", default="data/markets.db")
+    p_dt.add_argument("--out", default="reports")
+    p_dt.add_argument("--category", default="sports")
+    p_dt.add_argument("--horizon", default="24h")
+    p_dt.add_argument("--bootstrap", type=int, default=1000)
+    p_dt.add_argument("--seed", type=int, default=42)
+    p_dt.set_defaults(func=cmd_venue_difftest)
 
     p_bc = sub.add_parser("backfill-created", help="v2: backfill markets.created_at from Gamma")
     p_bc.add_argument("--db", default="data/markets.db")
