@@ -2,11 +2,9 @@
 
 This is a Polymarket calibration analysis project. The full design is in `ARCHITECTURE.md` — read it before doing anything substantive.
 
-## The single most important rule
+## Plan first
 
-**Before writing or modifying code, state the plan in 3–5 sentences and wait for confirmation.** No exceptions, even for "small" changes. If I say "go ahead" or "looks good," then implement. If I push back, revise the plan — do not start coding while I'm pushing back.
-
-This is non-negotiable. If you find yourself drafting code in your head before stating a plan, stop and state the plan first.
+Before writing or modifying code, small changes included, state the plan in 3–5 sentences and wait for my go-ahead ("go ahead", "looks good"). If I push back, revise the plan and wait again.
 
 ## Scope rules
 
@@ -19,7 +17,7 @@ This is non-negotiable. If you find yourself drafting code in your head before s
 
 - Storage logic stays in `src/calibration/storage/`. No raw SQL outside that module.
 - HTTP/API calls stay in the venue clients, `src/calibration/polymarket/` and `src/calibration/kalshi/`. No `httpx` or `requests` imports anywhere else.
-- The math in `src/calibration/analysis/` MUST have unit tests in `tests/`. Brier scores, calibration buckets, and bootstrap intervals all need known-input tests.
+- The math in `src/calibration/analysis/` needs unit tests in `tests/`. Brier scores, calibration buckets, and bootstrap intervals all need known-input tests.
 - No business logic in `repository.py`. It only reads and writes; analysis decisions live in `analysis/`.
 
 ## Things you should not do
@@ -34,17 +32,13 @@ This is non-negotiable. If you find yourself drafting code in your head before s
 
 - After each substantive change, suggest a commit message. Short, imperative, describes what changed and why (e.g. "phase 1 spike: confirm prices-history returns minute-level data").
 - When you finish a piece of work, summarize what changed in 2-3 sentences. I'll update my notes from your summary.
-- If you're unsure whether something belongs in v1, default to "ask before adding." A dashboard and real-time features are deferred — flag them if you find yourself reaching for them.
+- If you're unsure whether something is in scope, ask before adding it. A dashboard and real-time features are deferred — flag them if you find yourself reaching for them.
 - If you discover something in the data that contradicts ARCHITECTURE.md (e.g. the price-history API works differently than assumed), stop and tell me. Do not silently work around it.
 
 ## Phase awareness
 
 Always know which phase from ARCHITECTURE.md §9 we're in. If a request seems to belong to a later phase, say so and ask whether to skip ahead or stay focused.
 
-Current phase: **v2 measured-edge, Phases 0–5 shipped** on top of the v1.1 base. See ARCHITECTURE.md §14.
-- **Phases 0–2 (FLB measurement):** `flb` fits `logit(q)=a+b·logit(p)`; `markets.created_at` backfilled; `tick-coverage`. Headline: FLB at T-24h `b≈0.88` / T-7d `b≈0.72`, concentrated in sports (politics/geopolitics run b>1).
-- **Phase 3 (sized rule):** `analysis/edge.py` (edge/Kelly/cost/VWAP), `backtest-rule`, `freeze-rule` → committed `reports/frozen_rule_v1.json`. Backtest: gross edge dies between 1–2¢ half-spread; only sports@24h / crypto@7d clear the b-CI<1 gate.
-- **Phase 4 (forward test):** `forward_signals` table; `forward-scan` (frozen rule + live CLOB book → realizable paper fills) and `forward-settle` (P&L, realized-minus-predicted, dispute→void). Accrues on the calendar — run `forward-scan` on a cadence.
-- **Phase 5 (Kalshi cross-venue):** `markets.venue` column; `kalshi/` module (no signing/`cryptography`); `kalshi-discover`, `kalshi-fetch-candles`, `cross-venue`. Finding (pooled interaction test, `venue-difftest`): Polymarket sports@24h slope 0.834 vs Kalshi 0.962, cross-venue difference **b3=0.128 [−0.034, 0.305]** — CI includes 0, so the venue slope difference is **not significant** (FLB is significant on Polymarket alone, not on Kalshi alone, but the two are statistically indistinguishable). Matched politics/geopolitics sweep deferred (Kalshi fragments those into thousands of series).
+Current phase: **v2 measured-edge, Phases 0–5 shipped** on top of the v1.1 base; each phase's commands and findings are in ARCHITECTURE.md §14.
 
-The scoring math stays venue-neutral; rule commands are scoped to `--venue` (default polymarket). 120 tests; ruff clean. **Phase 3/4 trading work is measurement only** — no live capital without explicit instruction; the forward test is paper. The interface artifact `reports/flb_map.csv` is for PMRA to consume — do not modify PMRA from here. Note: the local `.venv` (gitignored) was rebuilt against system Python 3.12 (the old one pointed at a dead anaconda interpreter).
+The scoring math stays venue-neutral; rule commands are scoped to `--venue` (default polymarket). **Phase 3/4 trading work is measurement only** — no live capital without explicit instruction; the forward test is paper. `reports/flb_map.csv` is PMRA's input — do not modify PMRA from here.
